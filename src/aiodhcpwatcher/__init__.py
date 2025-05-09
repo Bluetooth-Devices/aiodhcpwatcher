@@ -87,7 +87,6 @@ class AIODHCPWatcher:
     def __init__(self, callback: Callable[[DHCPRequest], None]) -> None:
         """Initialize watcher."""
         self._loop = asyncio.get_running_loop()
-        self._if_index: int | None = None
         self._sock: socket.socket | None = None
         self._fileno: int | None = None
         self._callback = callback
@@ -134,7 +133,7 @@ class AIODHCPWatcher:
             self._sock = None
             self._fileno = None
 
-    def _start(self) -> Callable[["Packet"], None] | None:
+    def _start(self, **kwargs: Any) -> Callable[["Packet"], None] | None:
         """Start watching for dhcp packets."""
         _init_scapy()
         # disable scapy promiscuous mode as we do not need it
@@ -150,7 +149,7 @@ class AIODHCPWatcher:
             return None
 
         try:
-            sock = self._make_listen_socket(FILTER)
+            sock = self._make_listen_socket(FILTER, **kwargs)
             self._fileno = sock.fileno()
         except (Scapy_Exception, OSError) as ex:
             if os.geteuid() == 0:
@@ -164,13 +163,13 @@ class AIODHCPWatcher:
         self._sock = sock
         return make_packet_handler(self._callback)
 
-    async def async_start(self) -> None:
+    async def async_start(self, **kwargs: Any) -> None:
         """Start watching for dhcp packets."""
         if self._shutdown:
             _LOGGER.debug("Not starting watcher because it is shutdown")
             return
         if not (
-            _handle_dhcp_packet := await self._loop.run_in_executor(None, self._start)
+            _handle_dhcp_packet := await self._loop.run_in_executor(None, partial(self._start, **kwargs))
         ):
             return
         if self._shutdown:  # may change during the executor call
@@ -191,11 +190,6 @@ class AIODHCPWatcher:
             self._sock = None
             self._fileno = None
         _LOGGER.debug("Started watching for dhcp packets")
-
-    async def async_start_on(self, if_index: int) -> None:
-        """Start watching for dhcp packets on specific interface."""
-        self._if_index = if_index
-        await self.async_start()
 
     def _on_data(
         self, handle_dhcp_packet: Callable[["Packet"], None], sock: Any
@@ -218,7 +212,7 @@ class AIODHCPWatcher:
         if data:
             handle_dhcp_packet(data)
 
-    def _make_listen_socket(self, cap_filter: str) -> Any:
+    def _make_listen_socket(self, cap_filter: str, **kwargs: Any) -> Any:
         """Get a nonblocking listen socket."""
         from scapy.data import ETH_P_ALL  # pylint: disable=import-outside-toplevel
         from scapy.interfaces import (  # pylint: disable=import-outside-toplevel
@@ -226,7 +220,7 @@ class AIODHCPWatcher:
             resolve_iface,
         )
 
-        iface = dev_from_index(self._if_index) if self._if_index else conf.iface
+        iface = dev_from_index(idx) if (idx := kwargs.get("if_index")) else conf.iface
         sock = resolve_iface(iface).l2listen()(
             type=ETH_P_ALL, iface=iface, filter=cap_filter
         )
@@ -259,19 +253,10 @@ class AIODHCPWatcher:
         compile_filter(cap_filter)
 
 
-async def async_start(callback: Callable[[DHCPRequest], None]) -> Callable[[], None]:
+async def async_start(callback: Callable[[DHCPRequest], None], **kwargs: Any) -> Callable[[], None]:
     """Listen for DHCP requests."""
     watcher = AIODHCPWatcher(callback)
-    await watcher.async_start()
-    return watcher.shutdown
-
-
-async def async_start_on(
-    if_index: int, callback: Callable[[DHCPRequest], None]
-) -> Callable[[], None]:
-    """Listen for DHCP requests on specific interface."""
-    watcher = AIODHCPWatcher(callback)
-    await watcher.async_start_on(if_index)
+    await watcher.async_start(**kwargs)
     return watcher.shutdown
 
 
