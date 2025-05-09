@@ -169,7 +169,9 @@ class AIODHCPWatcher:
             _LOGGER.debug("Not starting watcher because it is shutdown")
             return
         if not (
-            _handle_dhcp_packet := await self._loop.run_in_executor(None, partial(self._start, **kwargs))
+            _handle_dhcp_packet := await self._loop.run_in_executor(
+                None, partial(self._start, **kwargs)
+            )
         ):
             return
         if self._shutdown:  # may change during the executor call
@@ -253,7 +255,9 @@ class AIODHCPWatcher:
         compile_filter(cap_filter)
 
 
-async def async_start(callback: Callable[[DHCPRequest], None], **kwargs: Any) -> Callable[[], None]:
+async def async_start(
+    callback: Callable[[DHCPRequest], None], **kwargs: Any
+) -> Callable[[], None]:
     """Listen for DHCP requests."""
     watcher = AIODHCPWatcher(callback)
     await watcher.async_start(**kwargs)
