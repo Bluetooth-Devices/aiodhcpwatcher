@@ -266,7 +266,9 @@ async def async_start(callback: Callable[[DHCPRequest], None]) -> Callable[[], N
     return watcher.shutdown
 
 
-async def async_start_on(if_index: int, callback: Callable[[DHCPRequest], None]) -> Callable[[], None]:
+async def async_start_on(
+    if_index: int, callback: Callable[[DHCPRequest], None]
+) -> Callable[[], None]:
     """Listen for DHCP requests on specific interface."""
     watcher = AIODHCPWatcher(callback)
     await watcher.async_start_on(if_index)
