@@ -87,6 +87,7 @@ class AIODHCPWatcher:
     def __init__(self, callback: Callable[[DHCPRequest], None]) -> None:
         """Initialize watcher."""
         self._loop = asyncio.get_running_loop()
+        self._if_index: int | None = None
         self._sock: socket.socket | None = None
         self._fileno: int | None = None
         self._callback = callback
@@ -191,6 +192,11 @@ class AIODHCPWatcher:
             self._fileno = None
         _LOGGER.debug("Started watching for dhcp packets")
 
+    async def async_start_on(self, if_index: int) -> None:
+        """Start watching for dhcp packets on specific interface."""
+        self._if_index = if_index
+        await self.async_start()
+
     def _on_data(
         self, handle_dhcp_packet: Callable[["Packet"], None], sock: Any
     ) -> None:
@@ -216,10 +222,11 @@ class AIODHCPWatcher:
         """Get a nonblocking listen socket."""
         from scapy.data import ETH_P_ALL  # pylint: disable=import-outside-toplevel
         from scapy.interfaces import (  # pylint: disable=import-outside-toplevel
+            dev_from_index,
             resolve_iface,
         )
 
-        iface = conf.iface
+        iface = dev_from_index(self._if_index) if self._if_index else conf.iface
         sock = resolve_iface(iface).l2listen()(
             type=ETH_P_ALL, iface=iface, filter=cap_filter
         )
@@ -256,6 +263,13 @@ async def async_start(callback: Callable[[DHCPRequest], None]) -> Callable[[], N
     """Listen for DHCP requests."""
     watcher = AIODHCPWatcher(callback)
     await watcher.async_start()
+    return watcher.shutdown
+
+
+async def async_start_on(if_index: int, callback: Callable[[DHCPRequest], None]) -> Callable[[], None]:
+    """Listen for DHCP requests on specific interface."""
+    watcher = AIODHCPWatcher(callback)
+    await watcher.async_start_on(if_index)
     return watcher.shutdown
 
 
