@@ -87,8 +87,7 @@ class AIODHCPWatcher:
     def __init__(self, callback: Callable[[DHCPRequest], None]) -> None:
         """Initialize watcher."""
         self._loop = asyncio.get_running_loop()
-        self._sock: socket.socket | None = None
-        self._fileno: int | None = None
+        self._socks: [(int, socket.socket, int)] = []
         self._callback = callback
         self._shutdown: bool = False
         self._restart_timer: asyncio.TimerHandle | None = None
@@ -127,11 +126,11 @@ class AIODHCPWatcher:
         if self._restart_task:
             self._restart_task.cancel()
             self._restart_task = None
-        if self._sock and self._fileno:
-            self._loop.remove_reader(self._fileno)
-            self._sock.close()
-            self._sock = None
-            self._fileno = None
+        if self._socks is not None:
+            for _, sock, fileno in self._socks:
+                self._loop.remove_reader(fileno)
+                sock.close()
+            self._socks = []
 
     def _start(self, **kwargs: Any) -> Callable[["Packet"], None] | None:
         """Start watching for dhcp packets."""
@@ -148,19 +147,24 @@ class AIODHCPWatcher:
             )
             return None
 
-        try:
-            sock = self._make_listen_socket(FILTER, **kwargs)
-            self._fileno = sock.fileno()
-        except (Scapy_Exception, OSError) as ex:
-            if os.geteuid() == 0:
-                _LOGGER.error("Cannot watch for dhcp packets: %s", ex)
-            else:
-                _LOGGER.debug(
-                    "Cannot watch for dhcp packets without root or CAP_NET_RAW: %s", ex
-                )
-            return None
+        for if_index in kwargs.get("if_indexes", [None]):
+            try:
+                if (sock := self._make_listen_socket(FILTER, if_index)):
+                    if (fileno := sock.fileno()) < 0:
+                        sock.close()
+                        raise OSError("Cannot create socket")
+                    self._socks.append((if_index, sock, fileno))
+            except (Scapy_Exception, OSError) as ex:
+                if os.geteuid() == 0:
+                    _LOGGER.error("Cannot watch for dhcp packets on %d: %s", if_index, ex)
+                else:
+                    _LOGGER.debug(
+                        "Cannot watch for dhcp packets without root or CAP_NET_RAW on %d: %s",
+                        if_index,
+                        ex,
+                    )
+                return None
 
-        self._sock = sock
         return make_packet_handler(self._callback)
 
     async def async_start(self, **kwargs: Any) -> None:
@@ -177,21 +181,19 @@ class AIODHCPWatcher:
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
             return
-        sock = self._sock
-        fileno = self._fileno
-        if TYPE_CHECKING:
-            assert sock is not None
-            assert fileno is not None
-        try:
-            self._loop.add_reader(
-                fileno, partial(self._on_data, _handle_dhcp_packet, sock)
-            )
-        except PermissionError as ex:
-            _LOGGER.error("Permission denied to watch for dhcp packets: %s", ex)
-            sock.close()
-            self._sock = None
-            self._fileno = None
-        _LOGGER.debug("Started watching for dhcp packets")
+        if self._socks is None or len(self._socks) == 0:
+            _LOGGER.debug("Not starting watcher because no dhcp sockets created")
+            return
+        for if_index, sock, fileno in list(self._socks):
+            try:
+                self._loop.add_reader(fileno, partial(self._on_data, _handle_dhcp_packet, sock))
+                _LOGGER.debug("Started watching for dhcp packets on %d", if_index)
+            except PermissionError as ex:
+                _LOGGER.error("Permission denied to watch for dhcp packets on %d: %s", if_index, ex)
+                sock.close()
+                self._socks.remove((if_index, sock, fileno))
+        if len(self._socks) == 0:
+            _LOGGER.debug("Not starting watcher because no readers added")
 
     def _on_data(
         self, handle_dhcp_packet: Callable[["Packet"], None], sock: Any
@@ -214,7 +216,7 @@ class AIODHCPWatcher:
         if data:
             handle_dhcp_packet(data)
 
-    def _make_listen_socket(self, cap_filter: str, **kwargs: Any) -> Any:
+    def _make_listen_socket(self, cap_filter: str, if_index: int | None) -> Any:
         """Get a nonblocking listen socket."""
         from scapy.data import ETH_P_ALL  # pylint: disable=import-outside-toplevel
         from scapy.interfaces import (  # pylint: disable=import-outside-toplevel
@@ -222,7 +224,7 @@ class AIODHCPWatcher:
             resolve_iface,
         )
 
-        iface = dev_from_index(idx) if (idx := kwargs.get("if_index")) else conf.iface
+        iface = dev_from_index(if_index) if if_index else conf.iface
         sock = resolve_iface(iface).l2listen()(
             type=ETH_P_ALL, iface=iface, filter=cap_filter
         )
