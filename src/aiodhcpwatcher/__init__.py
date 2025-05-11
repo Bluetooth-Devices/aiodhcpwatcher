@@ -148,7 +148,7 @@ class AIODHCPWatcher:
             return None
 
         for if_index in (
-            if_indexes
+            set(if_indexes)
             if (if_indexes := kwargs.get("if_indexes", [None])) and len(if_indexes) > 0
             else [None]
         ):
@@ -229,7 +229,7 @@ class AIODHCPWatcher:
             resolve_iface,
         )
 
-        iface = dev_from_index(if_index) if if_index else conf.iface
+        iface = dev_from_index(if_index) if if_index and if_index > -1 else conf.iface
         sock = resolve_iface(iface).l2listen()(
             type=ETH_P_ALL, iface=iface, filter=cap_filter
         )
