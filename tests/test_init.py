@@ -201,10 +201,17 @@ async def _write_test_packets_to_pipe(w: int) -> None:
             await asyncio.sleep(0)
 
 
+class MockIface:
+
+    def __init__(self) -> None:
+        self.index = 1
+
+
 class MockSocket:
 
     def __init__(self, reader: int, exc: type[Exception] | None = None) -> None:
         self._fileno = reader
+        self.iface = MockIface()
         self.close = MagicMock()
         self.buffer = b""
         self.exc = exc

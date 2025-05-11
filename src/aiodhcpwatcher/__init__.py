@@ -87,7 +87,7 @@ class AIODHCPWatcher:
     def __init__(self, callback: Callable[[DHCPRequest], None]) -> None:
         """Initialize watcher."""
         self._loop = asyncio.get_running_loop()
-        self._socks: [(int, socket.socket, int)] = []
+        self._socks: list[tuple[int, socket.socket, int]] = []
         self._callback = callback
         self._shutdown: bool = False
         self._restart_timer: asyncio.TimerHandle | None = None
@@ -150,18 +150,15 @@ class AIODHCPWatcher:
         for if_index in kwargs.get("if_indexes", [None]):
             try:
                 if sock := self._make_listen_socket(FILTER, if_index):
-                    if (fileno := sock.fileno()) < 0:
-                        sock.close()
-                        raise OSError("Cannot create socket")
                     if if_index is None:
                         if_index = sock.iface.index
-                    self._socks.append((if_index, sock, fileno))
+                    self._socks.append((if_index, sock, sock.fileno()))
             except (Scapy_Exception, OSError) as ex:
                 if os.geteuid() == 0:
-                    _LOGGER.error("Cannot watch for dhcp packets on %s", ex)
+                    _LOGGER.error("Cannot watch for dhcp packets: %s", ex)
                 else:
                     _LOGGER.debug(
-                        "Cannot watch for dhcp packets without root or CAP_NET_RAW on %s",
+                        "Cannot watch for dhcp packets without root or CAP_NET_RAW: %s",
                         ex,
                     )
                 return None
@@ -181,9 +178,6 @@ class AIODHCPWatcher:
             return
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
-            return
-        if self._socks is None or len(self._socks) == 0:
-            _LOGGER.debug("Not starting watcher because no dhcp sockets created")
             return
         for if_index, sock, fileno in list(self._socks):
             try:
