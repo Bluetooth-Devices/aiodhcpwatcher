@@ -149,14 +149,16 @@ class AIODHCPWatcher:
 
         for if_index in kwargs.get("if_indexes", [None]):
             try:
-                if (sock := self._make_listen_socket(FILTER, if_index)):
+                if sock := self._make_listen_socket(FILTER, if_index):
                     if (fileno := sock.fileno()) < 0:
                         sock.close()
                         raise OSError("Cannot create socket")
                     self._socks.append((if_index, sock, fileno))
             except (Scapy_Exception, OSError) as ex:
                 if os.geteuid() == 0:
-                    _LOGGER.error("Cannot watch for dhcp packets on %d: %s", if_index, ex)
+                    _LOGGER.error(
+                        "Cannot watch for dhcp packets on %d: %s", if_index, ex
+                    )
                 else:
                     _LOGGER.debug(
                         "Cannot watch for dhcp packets without root or CAP_NET_RAW on %d: %s",
@@ -186,10 +188,16 @@ class AIODHCPWatcher:
             return
         for if_index, sock, fileno in list(self._socks):
             try:
-                self._loop.add_reader(fileno, partial(self._on_data, _handle_dhcp_packet, sock))
+                self._loop.add_reader(
+                    fileno, partial(self._on_data, _handle_dhcp_packet, sock)
+                )
                 _LOGGER.debug("Started watching for dhcp packets on %d", if_index)
             except PermissionError as ex:
-                _LOGGER.error("Permission denied to watch for dhcp packets on %d: %s", if_index, ex)
+                _LOGGER.error(
+                    "Permission denied to watch for dhcp packets on %d: %s",
+                    if_index,
+                    ex,
+                )
                 sock.close()
                 self._socks.remove((if_index, sock, fileno))
         if len(self._socks) == 0:
