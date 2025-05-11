@@ -153,16 +153,15 @@ class AIODHCPWatcher:
                     if (fileno := sock.fileno()) < 0:
                         sock.close()
                         raise OSError("Cannot create socket")
+                    if if_index is None:
+                        if_index = sock.iface.index
                     self._socks.append((if_index, sock, fileno))
             except (Scapy_Exception, OSError) as ex:
                 if os.geteuid() == 0:
-                    _LOGGER.error(
-                        "Cannot watch for dhcp packets on %d: %s", if_index, ex
-                    )
+                    _LOGGER.error("Cannot watch for dhcp packets on %s", ex)
                 else:
                     _LOGGER.debug(
-                        "Cannot watch for dhcp packets without root or CAP_NET_RAW on %d: %s",
-                        if_index,
+                        "Cannot watch for dhcp packets without root or CAP_NET_RAW on %s",
                         ex,
                     )
                 return None
@@ -224,7 +223,7 @@ class AIODHCPWatcher:
         if data:
             handle_dhcp_packet(data)
 
-    def _make_listen_socket(self, cap_filter: str, if_index: int | None) -> Any:
+    def _make_listen_socket(self, cap_filter: str, if_index: int | None = None) -> Any:
         """Get a nonblocking listen socket."""
         from scapy.data import ETH_P_ALL  # pylint: disable=import-outside-toplevel
         from scapy.interfaces import (  # pylint: disable=import-outside-toplevel
