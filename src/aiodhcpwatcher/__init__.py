@@ -147,7 +147,7 @@ class AIODHCPWatcher:
             )
             return None
 
-        for if_index in kwargs.get("if_indexes", [None]):
+        for if_index in (if_indexes if (if_indexes := kwargs.get("if_indexes", [None])) and len(if_indexes) > 0 else [None]):
             try:
                 if sock := self._make_listen_socket(FILTER, if_index):
                     if if_index is None:
