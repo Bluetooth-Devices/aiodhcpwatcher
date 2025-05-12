@@ -174,7 +174,7 @@ class AIODHCPWatcher:
             return
         if not (
             _handle_dhcp_packet := await self._loop.run_in_executor(
-                None, partial(self._start, if_indexes)
+                None, self._start, if_indexes
             )
         ):
             return
