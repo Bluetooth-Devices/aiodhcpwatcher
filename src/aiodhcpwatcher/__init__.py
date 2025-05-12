@@ -132,7 +132,9 @@ class AIODHCPWatcher:
                 sock.close()
             self._socks = []
 
-    def _start(self, **kwargs: Any) -> Callable[["Packet"], None] | None:
+    def _start(
+        self, if_indexes: Iterable[int] | None = None
+    ) -> Callable[["Packet"], None] | None:
         """Start watching for dhcp packets."""
         _init_scapy()
         # disable scapy promiscuous mode as we do not need it
@@ -147,11 +149,7 @@ class AIODHCPWatcher:
             )
             return None
 
-        for if_index in (
-            set(if_indexes)
-            if (if_indexes := kwargs.get("if_indexes", [None])) and len(if_indexes) > 0
-            else [None]
-        ):
+        for if_index in set(if_indexes) if if_indexes else [None]:
             try:
                 if sock := self._make_listen_socket(FILTER, if_index):
                     if if_index is None:
@@ -169,14 +167,14 @@ class AIODHCPWatcher:
 
         return make_packet_handler(self._callback)
 
-    async def async_start(self, **kwargs: Any) -> None:
+    async def async_start(self, if_indexes: Iterable[int] | None = None) -> None:
         """Start watching for dhcp packets."""
         if self._shutdown:
             _LOGGER.debug("Not starting watcher because it is shutdown")
             return
         if not (
             _handle_dhcp_packet := await self._loop.run_in_executor(
-                None, partial(self._start, **kwargs)
+                None, partial(self._start, if_indexes)
             )
         ):
             return
@@ -263,11 +261,11 @@ class AIODHCPWatcher:
 
 
 async def async_start(
-    callback: Callable[[DHCPRequest], None], **kwargs: Any
+    callback: Callable[[DHCPRequest], None], if_indexes: Iterable[int] | None = None
 ) -> Callable[[], None]:
     """Listen for DHCP requests."""
     watcher = AIODHCPWatcher(callback)
-    await watcher.async_start(**kwargs)
+    await watcher.async_start(if_indexes)
     return watcher.shutdown
 
 
