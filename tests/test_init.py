@@ -202,9 +202,11 @@ async def _write_test_packets_to_pipe(w: int) -> None:
 
 
 class MockIface:
+    index: int = 0
 
     def __init__(self) -> None:
-        self.index = 1
+        MockIface.index = MockIface.index + 1
+        self.index: int = MockIface.index
 
 
 class MockSocket:
@@ -415,7 +417,7 @@ async def test_watcher_if_indexes(caplog: pytest.LogCaptureFixture) -> None:
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-        stop = await async_start(_handle_dhcp_packet, if_indexes=[1])
+        stop = await async_start(_handle_dhcp_packet, if_indexes=[1, 2])
         await _write_test_packets_to_pipe(w)
         stop()
 
