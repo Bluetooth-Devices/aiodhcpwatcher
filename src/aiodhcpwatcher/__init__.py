@@ -186,10 +186,10 @@ class AIODHCPWatcher:
                 self._loop.add_reader(
                     fileno, partial(self._on_data, _handle_dhcp_packet, sock)
                 )
-                _LOGGER.debug("Started watching for dhcp packets on %d", if_index)
+                _LOGGER.debug("Started watching for dhcp packets on %s", if_index)
             except PermissionError as ex:
                 _LOGGER.error(
-                    "Permission denied to watch for dhcp packets on %d: %s",
+                    "Permission denied to watch for dhcp packets on %s: %s",
                     if_index,
                     ex,
                 )
