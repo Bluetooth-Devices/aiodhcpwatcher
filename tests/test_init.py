@@ -16,7 +16,13 @@ from scapy.error import Scapy_Exception
 from scapy.layers.l2 import Ether
 from scapy.packet import Packet
 
-from aiodhcpwatcher import AUTO_RECOVER_TIME, DHCPRequest, async_init, async_start
+from aiodhcpwatcher import (
+    AUTO_RECOVER_TIME,
+    DHCPRequest,
+    async_init,
+    async_start,
+    make_packet_handler,
+)
 
 utcnow = partial(datetime.now, timezone.utc)
 _MONOTONIC_RESOLUTION = time.get_clock_info("monotonic").resolution
@@ -568,3 +574,51 @@ async def test_permission_denied_to_add_reader(
         (await async_start(lambda data: None))()
 
     assert "Permission denied to watch for dhcp packets" in caplog.text
+
+
+def test_hostname_idna_unicode_error_does_not_crash_handler() -> None:
+    """
+    A crafted DHCP hostname must not crash the packet handler.
+
+    On Python < 3.13 the ``idna`` codec raises a bare ``UnicodeError`` (e.g.
+    "label empty or too long") instead of ``UnicodeDecodeError`` for malformed
+    hostnames. The handler previously caught only ``UnicodeDecodeError``, so an
+    untrusted DHCP packet from the LAN could raise an uncaught exception inside
+    the asyncio reader callback. This test simulates that codec behaviour in a
+    version-independent way and asserts the handler swallows it and falls back
+    to a lossy utf-8 decode.
+    """
+    from scapy.layers.dhcp import DHCP
+    from scapy.layers.inet import IP
+    from scapy.layers.l2 import Ether
+
+    class _IdnaUnicodeErrorBytes(bytes):
+        """bytes whose idna decode raises a bare UnicodeError (pre-3.13)."""
+
+        def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:  # type: ignore[override]
+            if encoding == "idna":
+                raise UnicodeError("label empty or too long")
+            return super().decode(encoding, errors)
+
+    requests: list[DHCPRequest] = []
+    handler = make_packet_handler(requests.append)
+
+    packet = (
+        Ether(src="b8:b7:f1:6d:b5:33")
+        / IP(src="192.168.210.56")
+        / DHCP(
+            options=[
+                ("message-type", 3),
+                ("hostname", _IdnaUnicodeErrorBytes(b"xn--bad")),
+                "end",
+            ]
+        )
+    )
+
+    # Must not raise, even though idna decode raises a bare UnicodeError.
+    handler(packet)
+
+    assert len(requests) == 1
+    assert requests[0].hostname == "xn--bad"
+    assert requests[0].ip_address == "192.168.210.56"
+    assert requests[0].mac_address == "b8:b7:f1:6d:b5:33"
