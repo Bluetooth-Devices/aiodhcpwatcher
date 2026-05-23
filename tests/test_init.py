@@ -625,7 +625,8 @@ def test_hostname_idna_unicode_error_does_not_crash_handler() -> None:
 
 
 def test_all_exports_are_importable() -> None:
-    """Every name advertised in ``__all__`` must be a real module attribute.
+    """
+    Every name advertised in ``__all__`` must be a real module attribute.
 
     Regression test: ``__all__`` listed ``"start"`` long after the
     module-level ``start`` function was renamed to ``async_start``, so
