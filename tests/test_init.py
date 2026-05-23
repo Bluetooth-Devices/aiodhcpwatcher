@@ -636,9 +636,9 @@ def test_all_exports_are_importable() -> None:
     import aiodhcpwatcher
 
     for name in aiodhcpwatcher.__all__:
-        assert hasattr(aiodhcpwatcher, name), (
-            f"{name!r} is declared in __all__ but not defined in the module"
-        )
+        assert hasattr(
+            aiodhcpwatcher, name
+        ), f"{name!r} is declared in __all__ but not defined in the module"
 
 
 def test_async_start_is_exported() -> None:
