@@ -646,3 +646,44 @@ def test_async_start_is_exported() -> None:
     import aiodhcpwatcher
 
     assert "async_start" in aiodhcpwatcher.__all__
+
+
+@pytest.mark.asyncio
+async def test_invalid_file_descriptor(caplog: pytest.LogCaptureFixture) -> None:
+    """
+    Test an invalid (-1) socket file descriptor is handled gracefully.
+
+    On platforms such as Windows scapy's listen socket does not expose a
+    selectable file descriptor, so fileno() returns -1 and add_reader would
+    raise ValueError. The watcher must not crash.
+    """
+    mock_socket = MockSocket(-1)
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            return_value=mock_socket,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        (await async_start(lambda data: None))()
+
+    assert "valid file descriptor" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_add_reader_not_supported(caplog: pytest.LogCaptureFixture) -> None:
+    """
+    Test add_reader being unsupported is handled gracefully.
+
+    The Windows Proactor event loop does not implement add_reader, which
+    raises NotImplementedError. The watcher must degrade gracefully.
+    """
+    loop = asyncio.get_running_loop()
+    with (
+        patch.object(loop, "add_reader", side_effect=NotImplementedError),
+        patch("scapy.arch.common.compile_filter"),
+        patch.object(interfaces, "resolve_iface"),
+    ):
+        (await async_start(lambda data: None))()
+
+    assert "Cannot watch for dhcp packets" in caplog.text
