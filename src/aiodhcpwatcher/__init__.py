@@ -4,9 +4,10 @@ import asyncio
 import logging
 import os
 import socket
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
 from scapy.config import conf
 from scapy.error import Scapy_Exception
@@ -45,7 +46,7 @@ def make_packet_handler(
         if not (dhcp_packet := packet.getlayer(DHCP)):
             return
 
-        options: Iterable[tuple[str, int | bytes | None]] = dhcp_packet.options
+        options: Iterable[tuple[str, int | bytes | None] | str] = dhcp_packet.options
 
         options_dict: dict[str, int | bytes | None] = {}
         for option in options:
