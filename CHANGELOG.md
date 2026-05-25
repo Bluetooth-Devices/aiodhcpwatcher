@@ -1,10 +1,10 @@
 # Changelog
 
-## v1.2.2-rc.1 (2026-05-24)
+## v1.2.2 (2026-05-25)
 
 ### Bug fixes
 
-- Bump ruff target to py310 and move lint settings under [tool.ruff.lint] ([`e77a1f6`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/e77a1f69c6b8874da9c6b6a554896e5369243791))
+- Repair ruff and mypy after autoupdate ([`1b1935a`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/1b1935a48e3f1b928047e4c4b65c780a514612a0))
 
 ## v1.2.1 (2025-08-12)
 

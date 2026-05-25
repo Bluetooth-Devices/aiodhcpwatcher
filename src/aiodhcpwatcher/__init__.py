@@ -1,4 +1,4 @@
-__version__ = "1.2.2-rc.1"
+__version__ = "1.2.2"
 
 import asyncio
 import logging
