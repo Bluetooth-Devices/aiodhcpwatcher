@@ -219,6 +219,11 @@ class MockSocket:
 
     def __init__(self, reader: int, exc: type[Exception] | None = None) -> None:
         self._fileno = reader
+        if reader != -1:
+            # The real listen socket is set non-blocking in _make_listen_socket,
+            # so the mock reads from a non-blocking fd too. This keeps os.read in
+            # _on_data off the event loop's blocking radar (see blockbuster).
+            os.set_blocking(reader, False)
         self.iface = MockIface()
         self.close = MagicMock()
         self.buffer = b""
