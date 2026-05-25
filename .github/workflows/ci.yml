@@ -78,6 +78,10 @@ jobs:
       - name: Run benchmarks
         uses: CodSpeedHQ/action@v4
         with:
+          # CodSpeed Action v4 dropped the implicit default and now requires
+          # an explicit mode. "simulation" keeps the instrumented, machine-
+          # independent measurements that ran by default on v3 standard runners.
+          mode: simulation
           token: ${{ secrets.CODSPEED_TOKEN }}
           run: poetry run pytest --no-cov --codspeed tests/benchmarks
 
