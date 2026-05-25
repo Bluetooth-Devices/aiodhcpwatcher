@@ -622,3 +622,27 @@ def test_hostname_idna_unicode_error_does_not_crash_handler() -> None:
     assert requests[0].hostname == "xn--bad"
     assert requests[0].ip_address == "192.168.210.56"
     assert requests[0].mac_address == "b8:b7:f1:6d:b5:33"
+
+
+def test_all_exports_are_importable() -> None:
+    """
+    Every name advertised in ``__all__`` must be a real module attribute.
+
+    Regression test: ``__all__`` listed ``"start"`` long after the
+    module-level ``start`` function was renamed to ``async_start``, so
+    ``from aiodhcpwatcher import *`` raised ``AttributeError: module
+    'aiodhcpwatcher' has no attribute 'start'``.
+    """
+    import aiodhcpwatcher
+
+    for name in aiodhcpwatcher.__all__:
+        assert hasattr(
+            aiodhcpwatcher, name
+        ), f"{name!r} is declared in __all__ but not defined in the module"
+
+
+def test_async_start_is_exported() -> None:
+    """``async_start`` is the documented entrypoint and must be exported."""
+    import aiodhcpwatcher
+
+    assert "async_start" in aiodhcpwatcher.__all__
