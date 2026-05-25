@@ -65,12 +65,10 @@ jobs:
 
   benchmark:
     runs-on: ubuntu-latest
-    # CODSPEED_TOKEN is not exposed to workflows triggered by forked PRs, so the
-    # CodSpeed upload would fail with 401. Only run where secrets are available:
-    # pushes to main and pull requests opened from a branch in this repo.
-    if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+    # Tokenless CodSpeed authenticates via GitHub's OIDC token, so the job needs
+    # permission to mint one (no CODSPEED_TOKEN secret required).
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v5
       - name: Set up Python
@@ -88,7 +86,6 @@ jobs:
           # an explicit mode. "simulation" keeps the instrumented, machine-
           # independent measurements that ran by default on v3 standard runners.
           mode: simulation
-          token: ${{ secrets.CODSPEED_TOKEN }}
           run: poetry run pytest --no-cov --codspeed tests/benchmarks
 
   release:
