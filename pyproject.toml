@@ -34,7 +34,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-scapy = ">=2.5.0"
+scapy = ">=2.7.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7,<9"
