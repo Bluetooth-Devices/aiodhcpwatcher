@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.4 (2026-05-25)
+
+### Bug fixes
+
+- Use github.ref for release checkout so forks work ([`03b23bd`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/03b23bd8091989ce3039860a6b677ce8299c1b9e))
+
 ## v1.2.3 (2026-05-25)
 
 ### Bug fixes
