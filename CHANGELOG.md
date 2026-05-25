@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.7 (2026-05-25)
+
+### Bug fixes
+
+- Don't crash packet handler on missing ether/ip layers ([`4ea36a7`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/4ea36a73cb4b702572ff27fa567240be55dfbfc2))
+
+### Testing
+
+- Detect event-loop blocking calls with blockbuster ([`a58eba3`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/a58eba383543d5bb29fa4772c3b27c02efa359ca))
+
 ## v1.2.6 (2026-05-25)
 
 ### Bug fixes
