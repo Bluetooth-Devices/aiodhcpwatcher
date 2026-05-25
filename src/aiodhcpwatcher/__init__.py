@@ -187,6 +187,19 @@ class AIODHCPWatcher:
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
             return
         for if_index, sock, fileno in list(self._socks):
+            if fileno == -1:
+                # On some platforms (notably Windows) scapy's listen socket does
+                # not expose a selectable file descriptor, so fileno() returns -1
+                # and add_reader cannot watch it. This platform is unsupported.
+                _LOGGER.error(
+                    "Cannot watch for dhcp packets on %s because the socket does "
+                    "not have a valid file descriptor; this platform is likely "
+                    "unsupported",
+                    if_index,
+                )
+                sock.close()
+                self._socks.remove((if_index, sock, fileno))
+                continue
             try:
                 self._loop.add_reader(
                     fileno, partial(self._on_data, _handle_dhcp_packet, sock)
@@ -195,6 +208,17 @@ class AIODHCPWatcher:
             except PermissionError as ex:
                 _LOGGER.error(
                     "Permission denied to watch for dhcp packets on %s: %s",
+                    if_index,
+                    ex,
+                )
+                sock.close()
+                self._socks.remove((if_index, sock, fileno))
+            except (NotImplementedError, ValueError) as ex:
+                # Some event loops (e.g. the Windows Proactor loop) do not
+                # implement add_reader, and some sockets report an invalid file
+                # descriptor. Degrade gracefully instead of crashing.
+                _LOGGER.error(
+                    "Cannot watch for dhcp packets on %s: %s",
                     if_index,
                     ex,
                 )
