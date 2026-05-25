@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.3 (2026-05-25)
+
+### Bug fixes
+
+- Catch unicodeerror when decoding crafted dhcp hostname ([`720d506`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/720d50687d7be8b047356f5fa2e2ecd9eac4d026))
+
 ## v1.2.2 (2026-05-25)
 
 ### Bug fixes
