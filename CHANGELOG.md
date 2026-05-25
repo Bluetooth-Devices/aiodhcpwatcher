@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.6 (2026-05-25)
+
+### Bug fixes
+
+- Handle invalid socket file descriptor on unsupported platforms ([`254cc1c`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/254cc1c03fb58be4ea9347bafd79a38df706917e))
+
 ## v1.2.5 (2026-05-25)
 
 ### Bug fixes
