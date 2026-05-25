@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.5-rc.1 (2026-05-25)
+
+### Bug fixes
+
+- Export async_start in __all__ (was nonexistent 'start') ([`74bc51f`](https://github.com/Bluetooth-Devices/aiodhcpwatcher/commit/74bc51fb200fe6892eeda71e2f0efcc47e23a630))
+
 ## v1.2.4 (2026-05-25)
 
 ### Bug fixes
