@@ -642,7 +642,7 @@ def test_handler_no_ether_layer_does_not_crash() -> None:
     packet seen on such an interface. With no MAC available the packet should
     simply be skipped, not crash the asyncio reader callback.
     """
-    from scapy.layers.dhcp import DHCP, BOOTP
+    from scapy.layers.dhcp import BOOTP, DHCP
     from scapy.layers.inet import IP, UDP
 
     requests: list[DHCPRequest] = []
@@ -671,7 +671,7 @@ def test_handler_no_ip_layer_does_not_crash() -> None:
     IP layer that read raised ``AttributeError``. Such a packet has no usable
     client address and should be skipped rather than crash the handler.
     """
-    from scapy.layers.dhcp import DHCP, BOOTP
+    from scapy.layers.dhcp import BOOTP, DHCP
     from scapy.layers.inet import IP
 
     requests: list[DHCPRequest] = []

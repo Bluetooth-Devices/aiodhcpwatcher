@@ -59,7 +59,13 @@ def make_packet_handler(
             # Not a DHCP request
             return
 
-        ip_address: str = options_dict.get("requested_addr") or packet.getlayer(IP).src  # type: ignore[assignment]
+        ip_address: str | None = options_dict.get("requested_addr")  # type: ignore[assignment]
+        if not ip_address:
+            # No requested_addr option (e.g. a renewal): fall back to the source
+            # IP. Packets captured on link layers without IP framing have no IP
+            # layer, so guard against getlayer() returning None.
+            ip_layer = packet.getlayer(IP)
+            ip_address = ip_layer.src if ip_layer is not None else None
 
         hostname = ""
         if (hostname_bytes := options_dict.get("hostname")) and isinstance(
@@ -76,7 +82,11 @@ def make_packet_handler(
                 # DHCP packet cannot crash the packet handler.
                 hostname = hostname_bytes.decode("utf-8", errors="replace")
 
-        mac_address: str = packet.getlayer(Ether).src
+        # Not every link layer carries an Ethernet header (e.g. Linux cooked
+        # capture / SLL, PPP, tun), so getlayer(Ether) can be None; without a
+        # MAC there is nothing useful to report.
+        ether_layer = packet.getlayer(Ether)
+        mac_address: str | None = ether_layer.src if ether_layer is not None else None
 
         if ip_address is not None and mac_address is not None:
             callback(DHCPRequest(ip_address, hostname, mac_address))
