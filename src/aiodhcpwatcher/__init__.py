@@ -69,7 +69,11 @@ def make_packet_handler(
                 # The standard uses idna encoding for hostnames, but some clients
                 # do not follow the standard and use utf-8 instead.
                 hostname = hostname_bytes.decode("idna")
-            except UnicodeDecodeError:
+            except UnicodeError:
+                # On Python < 3.13 the idna codec can raise a bare UnicodeError
+                # (e.g. "label empty or too long") rather than UnicodeDecodeError
+                # for crafted hostnames. Catch the base class so an untrusted
+                # DHCP packet cannot crash the packet handler.
                 hostname = hostname_bytes.decode("utf-8", errors="replace")
 
         mac_address: str = packet.getlayer(Ether).src
