@@ -595,7 +595,7 @@ def test_hostname_idna_unicode_error_does_not_crash_handler() -> None:
     class _IdnaUnicodeErrorBytes(bytes):
         """bytes whose idna decode raises a bare UnicodeError (pre-3.13)."""
 
-        def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:  # type: ignore[override]
+        def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
             if encoding == "idna":
                 raise UnicodeError("label empty or too long")
             return super().decode(encoding, errors)
