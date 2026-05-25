@@ -629,6 +629,67 @@ def test_hostname_idna_unicode_error_does_not_crash_handler() -> None:
     assert requests[0].mac_address == "b8:b7:f1:6d:b5:33"
 
 
+def test_handler_no_ether_layer_does_not_crash() -> None:
+    """
+    A packet without an Ethernet layer must not crash the handler.
+
+    ``make_packet_handler`` is a public, exported entrypoint. Not every link
+    layer carries an ``Ether`` header: Linux cooked captures (the ``any``
+    pseudo-device uses an ``SLL`` header), PPP, tun, and some cellular/VPN
+    interfaces have no Ethernet framing, so ``packet.getlayer(Ether)`` returns
+    ``None``. The handler unconditionally read ``getlayer(Ether).src``, raising
+    ``AttributeError: 'NoneType' object has no attribute 'src'`` on every DHCP
+    packet seen on such an interface. With no MAC available the packet should
+    simply be skipped, not crash the asyncio reader callback.
+    """
+    from scapy.layers.dhcp import BOOTP, DHCP
+    from scapy.layers.inet import IP, UDP
+
+    requests: list[DHCPRequest] = []
+    handler = make_packet_handler(requests.append)
+
+    # IP present (requested_addr absent → renewal path), but no Ether layer.
+    packet = (
+        IP(src="192.168.1.50")
+        / UDP(sport=68, dport=67)
+        / BOOTP()
+        / DHCP(options=[("message-type", 3), "end"])
+    )
+    assert packet.getlayer(Ether) is None
+
+    # Must not raise; with no MAC the request is dropped.
+    handler(packet)
+    assert requests == []
+
+
+def test_handler_no_ip_layer_does_not_crash() -> None:
+    """
+    A packet without an IP layer must not crash the handler.
+
+    When a DHCP request carries no ``requested_addr`` option (e.g. a renewal),
+    the handler falls back to ``packet.getlayer(IP).src``. If the packet has no
+    IP layer that read raised ``AttributeError``. Such a packet has no usable
+    client address and should be skipped rather than crash the handler.
+    """
+    from scapy.layers.dhcp import BOOTP, DHCP
+    from scapy.layers.inet import IP
+
+    requests: list[DHCPRequest] = []
+    handler = make_packet_handler(requests.append)
+
+    # Ether present, but no IP layer and no requested_addr → IP.src fallback.
+    packet = (
+        Ether(src="aa:bb:cc:dd:ee:ff")
+        / BOOTP()
+        / DHCP(options=[("message-type", 3), "end"])
+    )
+    assert packet.getlayer(IP) is None
+
+    # Must not raise; with no IP the request is dropped.
+    handler(packet)
+    assert requests == []
+
+
 def test_all_exports_are_importable() -> None:
     """
     Every name advertised in ``__all__`` must be a real module attribute.
