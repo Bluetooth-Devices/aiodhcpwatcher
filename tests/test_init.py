@@ -18,6 +18,8 @@ from scapy.packet import Packet
 
 from aiodhcpwatcher import (
     AUTO_RECOVER_TIME,
+    FILTER,
+    AIODHCPWatcher,
     DHCPRequest,
     async_init,
     async_start,
@@ -753,3 +755,228 @@ async def test_add_reader_not_supported(caplog: pytest.LogCaptureFixture) -> Non
         (await async_start(lambda data: None))()
 
     assert "Cannot watch for dhcp packets" in caplog.text
+
+
+def test_handler_ignores_non_dhcp_request_message_type() -> None:
+    """
+    A DHCP packet whose message-type is not REQUEST must be ignored.
+
+    The handler only reports DHCP REQUEST packets (message-type 3). A packet
+    carrying any other message-type (e.g. an ACK) must not invoke the callback.
+    Building the options without a trailing ``"end"`` sentinel also exercises
+    the natural loop-exit path of the option parser.
+    """
+    from scapy.layers.dhcp import DHCP
+    from scapy.layers.inet import IP
+
+    requests: list[DHCPRequest] = []
+    handler = make_packet_handler(requests.append)
+
+    # message-type 5 (ACK), no "end" sentinel → loop exhausts, then bail out.
+    packet = (
+        Ether(src="b8:b7:f1:6d:b5:33")
+        / IP(src="192.168.210.56")
+        / DHCP(options=[("message-type", 5)])
+    )
+    handler(packet)
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_restart_soon_is_noop_when_timer_already_scheduled() -> None:
+    """A second restart_soon() call must not schedule a second timer."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    try:
+        watcher.restart_soon()
+        first_timer = watcher._restart_timer
+        assert first_timer is not None
+
+        watcher.restart_soon()
+        # The existing timer is reused; no new one is scheduled.
+        assert watcher._restart_timer is first_timer
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_execute_restart_is_noop_when_shutdown() -> None:
+    """_execute_restart() must not restart once the watcher is shut down."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    watcher._shutdown = True
+
+    watcher._execute_restart()
+
+    # No restart task is created while the watcher is shut down.
+    assert watcher._restart_task is None
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_restart_task() -> None:
+    """stop() must cancel and clear an in-flight restart task."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    restart_task = MagicMock()
+    watcher._restart_task = restart_task
+
+    watcher.stop()
+
+    restart_task.cancel.assert_called_once_with()
+    assert watcher._restart_task is None
+
+
+@pytest.mark.asyncio
+async def test_start_skips_interface_when_no_socket_created(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    _start must move on when _make_listen_socket yields no socket.
+
+    If the listen socket cannot be created for an interface, that interface is
+    skipped; with no sockets at all the watcher logs that no readers were added.
+    """
+    caplog.set_level(logging.DEBUG)
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            return_value=None,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        (await async_start(lambda data: None))()
+
+    assert "Not starting watcher because no readers added" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_start_is_noop_when_already_shutdown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """async_start() must do nothing once the watcher has been shut down."""
+    caplog.set_level(logging.DEBUG)
+    watcher = AIODHCPWatcher(lambda data: None)
+    watcher.shutdown()
+
+    await watcher.async_start()
+
+    assert "Not starting watcher because it is shutdown" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_async_start_aborts_when_shutdown_during_init(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    async_start() must abort if shutdown happens during the executor init.
+
+    _start runs in an executor and can take a while; if shutdown() is called
+    in the meantime the watcher must not register any readers afterwards.
+    """
+    caplog.set_level(logging.DEBUG)
+    watcher = AIODHCPWatcher(lambda data: None)
+
+    def _start_then_shutdown(
+        if_indexes: object = None,
+    ) -> "object":
+        # Simulate shutdown racing in while _start ran in the executor.
+        watcher._shutdown = True
+        return make_packet_handler(watcher._callback)
+
+    with patch.object(watcher, "_start", side_effect=_start_then_shutdown):
+        await watcher.async_start()
+
+    assert "Not starting watcher because it is shutdown after init" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_on_data_ignores_blocking_io_error() -> None:
+    """_on_data must swallow BlockingIOError from a non-blocking socket."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    handler = MagicMock()
+
+    class _Sock:
+        def recv(self) -> None:
+            raise BlockingIOError
+
+    # Must not raise and must not forward anything to the handler.
+    watcher._on_data(handler, _Sock())
+    handler.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_data_ignores_empty_read() -> None:
+    """_on_data must not invoke the handler when recv() returns no data."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    handler = MagicMock()
+
+    class _Sock:
+        def recv(self) -> bytes:
+            return b""
+
+    watcher._on_data(handler, _Sock())
+    handler.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_listen_socket_uses_pcap_fd_when_no_set_nonblock() -> None:
+    """
+    _make_listen_socket falls back to pcap_fd.setnonblock().
+
+    Some scapy listen-socket classes expose no ``set_nonblock`` method but do
+    expose a ``pcap_fd`` handle; the socket must be made non-blocking through it.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+
+    class _PcapFd:
+        def __init__(self) -> None:
+            self.setnonblock = MagicMock()
+
+    class _Sock:
+        def __init__(self) -> None:
+            self.pcap_fd = _PcapFd()
+            self.iface = MockIface()
+
+        def fileno(self) -> int:
+            return -1
+
+    sock = _Sock()
+    fake_iface = MagicMock()
+    fake_iface.l2listen.return_value = lambda **kwargs: sock
+    with patch("scapy.interfaces.resolve_iface", return_value=fake_iface):
+        result = watcher._make_listen_socket(FILTER)
+
+    assert result is sock
+    sock.pcap_fd.setnonblock.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_make_listen_socket_falls_back_to_fcntl() -> None:
+    """
+    _make_listen_socket uses fcntl when neither hook is available.
+
+    For socket classes exposing neither ``set_nonblock`` nor ``pcap_fd``, the
+    file descriptor must be switched to non-blocking via ``fcntl`` directly.
+    """
+    import fcntl
+
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    try:
+
+        class _Sock:
+            def __init__(self, fd: int) -> None:
+                self._fd = fd
+                self.iface = MockIface()
+
+            def fileno(self) -> int:
+                return self._fd
+
+        sock = _Sock(r)
+        fake_iface = MagicMock()
+        fake_iface.l2listen.return_value = lambda **kwargs: sock
+        with patch("scapy.interfaces.resolve_iface", return_value=fake_iface):
+            result = watcher._make_listen_socket(FILTER)
+
+        assert result is sock
+        assert fcntl.fcntl(r, fcntl.F_GETFL) & os.O_NONBLOCK
+    finally:
+        os.close(r)
+        os.close(w)

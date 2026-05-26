@@ -141,11 +141,10 @@ class AIODHCPWatcher:
         if self._restart_task:
             self._restart_task.cancel()
             self._restart_task = None
-        if self._socks is not None:
-            for _, sock, fileno in self._socks:
-                self._loop.remove_reader(fileno)
-                sock.close()
-            self._socks = []
+        for _, sock, fileno in self._socks:
+            self._loop.remove_reader(fileno)
+            sock.close()
+        self._socks = []
 
     def _start(
         self, if_indexes: Iterable[int] | None = None
