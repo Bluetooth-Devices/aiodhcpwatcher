@@ -10,6 +10,9 @@
   <a href="https://codecov.io/gh/bluetooth-devices/aiodhcpwatcher">
     <img src="https://img.shields.io/codecov/c/github/bluetooth-devices/aiodhcpwatcher.svg?logo=codecov&logoColor=fff&style=flat-square" alt="Test coverage percentage">
   </a>
+  <a href="https://codspeed.io/bluetooth-devices/aiodhcpwatcher">
+    <img src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json&style=flat-square" alt="CodSpeed performance benchmarks">
+  </a>
 </p>
 <p align="center">
   <a href="https://python-poetry.org/">
