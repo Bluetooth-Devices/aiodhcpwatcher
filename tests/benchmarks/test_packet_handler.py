@@ -7,6 +7,11 @@ is the one piece of this library that lives on a hot path. These benchmarks
 parse a fresh packet and dispatch it through the handler on every iteration,
 mirroring what happens per received packet, so regressions in option parsing,
 hostname decoding, or layer extraction surface as instruction-count changes.
+
+Rejection paths are benchmarked alongside the kept-REQUEST path because on a
+shared broadcast domain most captured packets are server-issued (OFFER/ACK)
+and get discarded; a regression that re-walks the option list for those would
+multiply the per-packet cost across the noisy majority of traffic.
 """
 
 from pytest_codspeed import BenchmarkFixture
@@ -74,6 +79,24 @@ REQUEST_NON_IDNA_HOSTNAME = _build_request(
     ],
 )
 
+# A DHCP OFFER from a server -- carries a realistic full option list, but the
+# handler must reject it (only REQUESTs are reported). This is the dominant
+# rejection path on real networks.
+OFFER = _build_request(
+    "aa:bb:cc:dd:ee:01",
+    "192.168.1.1",
+    [
+        ("message-type", "offer"),
+        ("server_id", "192.168.1.1"),
+        ("lease_time", 86400),
+        ("subnet_mask", "255.255.255.0"),
+        ("router", "192.168.1.1"),
+        ("name_server", "192.168.1.1"),
+        ("domain", "local"),
+        "end",
+    ],
+)
+
 
 def test_handle_request_with_hostname(benchmark: BenchmarkFixture) -> None:
     """Benchmark the requested_addr + ASCII hostname path."""
@@ -101,6 +124,17 @@ def test_handle_non_idna_hostname(benchmark: BenchmarkFixture) -> None:
     """Benchmark the utf-8 fallback path for hostnames idna cannot decode."""
     handler = make_packet_handler(lambda request: None)
     data = REQUEST_NON_IDNA_HOSTNAME
+
+    @benchmark
+    def _() -> None:
+        for _ in range(ITERATIONS):
+            handler(Ether(data))
+
+
+def test_handle_offer_rejected(benchmark: BenchmarkFixture) -> None:
+    """Benchmark the rejection path for non-REQUEST traffic (DHCP OFFER)."""
+    handler = make_packet_handler(lambda request: None)
+    data = OFFER
 
     @benchmark
     def _() -> None:
