@@ -847,6 +847,80 @@ async def test_start_skips_interface_when_no_socket_created(
 
 
 @pytest.mark.asyncio
+async def test_start_continues_to_other_interfaces_after_failure_as_root(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    _start() must keep trying other interfaces after one fails.
+
+    async_start() already degrades per-interface for add_reader/permission
+    errors, so socket creation has to be symmetric — a single bad NIC must
+    not silently disable DHCP capture on every other interface.
+    """
+    caplog.set_level(logging.DEBUG)
+    r, w = os.pipe()
+    working_socket = MockSocket(r)
+
+    def _fake_make_listen_socket(
+        cap_filter: str, if_index: int | None = None
+    ) -> MockSocket:
+        if if_index == 1:
+            raise Scapy_Exception("eth0 down")
+        return working_socket
+
+    with (
+        patch("os.geteuid", return_value=0),
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            side_effect=_fake_make_listen_socket,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        stop = await async_start(lambda data: None, if_indexes=[1, 2])
+        stop()
+
+    os.close(r)
+    os.close(w)
+    assert "Cannot watch for dhcp packets" in caplog.text
+    assert "Not starting watcher because no readers added" not in caplog.text
+    working_socket.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_start_continues_to_other_interfaces_after_failure_as_non_root(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-root variant: failure is logged at DEBUG, others still register."""
+    caplog.set_level(logging.DEBUG)
+    r, w = os.pipe()
+    working_socket = MockSocket(r)
+
+    def _fake_make_listen_socket(
+        cap_filter: str, if_index: int | None = None
+    ) -> MockSocket:
+        if if_index == 1:
+            raise Scapy_Exception("eth0 down")
+        return working_socket
+
+    with (
+        patch("os.geteuid", return_value=10),
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            side_effect=_fake_make_listen_socket,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        stop = await async_start(lambda data: None, if_indexes=[1, 2])
+        stop()
+
+    os.close(r)
+    os.close(w)
+    assert "Cannot watch for dhcp packets without root or CAP_NET_RAW" in caplog.text
+    assert "Not starting watcher because no readers added" not in caplog.text
+    working_socket.close.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_async_start_is_noop_when_already_shutdown(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
