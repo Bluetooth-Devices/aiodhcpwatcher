@@ -824,6 +824,36 @@ async def test_stop_cancels_pending_restart_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_restart_preserves_if_indexes() -> None:
+    """
+    _execute_restart() must re-use the if_indexes from the original async_start().
+
+    A transient capture error triggers restart_soon() → _execute_restart(); after
+    AUTO_RECOVER_TIME the watcher kicks off a fresh async_start(). The user's
+    original interface list must survive that round-trip, otherwise a watcher
+    set up for specific NICs silently falls back to the default interface.
+    """
+    seen: list[tuple[int, ...] | None] = []
+
+    def _capture(if_indexes: object = None) -> None:
+        seen.append(
+            tuple(if_indexes)  # type: ignore[arg-type]
+            if if_indexes is not None
+            else None
+        )
+        return None  # _start returns None aborts the rest of async_start
+
+    watcher = AIODHCPWatcher(lambda data: None)
+    with patch.object(watcher, "_start", side_effect=_capture):
+        await watcher.async_start(if_indexes=[7, 8])
+        watcher._execute_restart()
+        assert watcher._restart_task is not None
+        await watcher._restart_task
+
+    assert seen == [(7, 8), (7, 8)]
+
+
+@pytest.mark.asyncio
 async def test_start_skips_interface_when_no_socket_created(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
