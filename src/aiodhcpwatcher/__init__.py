@@ -107,6 +107,7 @@ class AIODHCPWatcher:
         self._shutdown: bool = False
         self._restart_timer: asyncio.TimerHandle | None = None
         self._restart_task: asyncio.Task[None] | None = None
+        self._if_indexes: tuple[int, ...] | None = None
 
     def restart_soon(self) -> None:
         """Restart the watcher soon."""
@@ -125,7 +126,9 @@ class AIODHCPWatcher:
         self._restart_timer = None
         if not self._shutdown:
             _LOGGER.debug("Restarting watcher")
-            self._restart_task = self._loop.create_task(self.async_start())
+            self._restart_task = self._loop.create_task(
+                self.async_start(self._if_indexes)
+            )
             self._restart_task.add_done_callback(self._clear_restart_task)
 
     def shutdown(self) -> None:
@@ -186,9 +189,12 @@ class AIODHCPWatcher:
         if self._shutdown:
             _LOGGER.debug("Not starting watcher because it is shutdown")
             return
+        # Materialise to a tuple so the auto-restart path can iterate again and
+        # so generators / consumed iterables don't quietly become empty on retry.
+        self._if_indexes = tuple(if_indexes) if if_indexes is not None else None
         if not (
             _handle_dhcp_packet := await self._loop.run_in_executor(
-                None, self._start, if_indexes
+                None, self._start, self._if_indexes
             )
         ):
             return
