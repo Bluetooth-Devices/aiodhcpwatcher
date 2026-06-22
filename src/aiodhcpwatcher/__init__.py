@@ -170,6 +170,9 @@ class AIODHCPWatcher:
                         if_index = sock.iface.index
                     self._socks.append((if_index, sock, sock.fileno()))
             except (Scapy_Exception, OSError) as ex:
+                # One interface failing must not abort the others; async_start()
+                # already degrades per-interface for add_reader/permission
+                # errors, so socket creation should be symmetric.
                 if os.geteuid() == 0:
                     _LOGGER.error("Cannot watch for dhcp packets: %s", ex)
                 else:
@@ -177,7 +180,7 @@ class AIODHCPWatcher:
                         "Cannot watch for dhcp packets without root or CAP_NET_RAW: %s",
                         ex,
                     )
-                return None
+                continue
 
         return make_packet_handler(self._callback)
 
