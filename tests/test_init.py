@@ -1068,3 +1068,118 @@ async def test_successful_restart_does_not_rearm_recovery() -> None:
         watcher.stop()
         os.close(r)
         os.close(w)
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_arms_recovery() -> None:
+    """A first start that cannot open a socket must schedule a retry."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            side_effect=OSError("interface not up yet"),
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        await watcher.async_start()
+
+    try:
+        assert watcher._restart_timer is not None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_recovers_when_interface_comes_up() -> None:
+    """The armed retry must install readers once the interface is available."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                side_effect=OSError("interface not up yet"),
+            ),
+            patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+        ):
+            await watcher.async_start()
+
+        assert watcher._restart_timer is not None
+
+        with (
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+        ):
+            async_fire_time_changed(utcnow() + timedelta(seconds=AUTO_RECOVER_TIME))
+            assert watcher._restart_task is not None
+            await watcher._restart_task
+
+        assert watcher._socks
+    finally:
+        watcher.stop()
+        os.close(r)
+        os.close(w)
+
+
+@pytest.mark.asyncio
+async def test_broken_packet_filter_does_not_arm_recovery() -> None:
+    """A missing packet filter is permanent; retrying it would log forever."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with patch(
+        "aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap",
+        side_effect=Scapy_Exception("no libpcap"),
+    ):
+        await watcher.async_start()
+
+    try:
+        assert watcher._restart_timer is None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_readers_added_does_not_arm_recovery(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Readers that all fail to register are a platform limit, not a transient."""
+    caplog.set_level(logging.DEBUG)
+    watcher = AIODHCPWatcher(lambda data: None)
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            return_value=None,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        await watcher.async_start()
+
+    try:
+        assert "Not starting watcher because no readers added" in caplog.text
+        assert watcher._restart_timer is None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_does_not_arm_after_shutdown() -> None:
+    """A start racing shutdown must not leave a retry timer behind."""
+    watcher = AIODHCPWatcher(lambda data: None)
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        watcher._shutdown = True
+        raise OSError("interface not up yet")
+
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            side_effect=_fail,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        await watcher.async_start()
+
+    assert watcher._restart_timer is None
