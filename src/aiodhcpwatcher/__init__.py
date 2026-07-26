@@ -249,7 +249,11 @@ class AIODHCPWatcher:
             self.stop()
             self.restart_soon()
             return
-        except BaseException as ex:  # pylint: disable=broad-except
+        except Exception as ex:  # pylint: disable=broad-except
+            # Deliberately not BaseException: scapy's SuperSocket.recv() converts
+            # dissection failures to a Raw layer but re-raises KeyboardInterrupt,
+            # so catching it here would swallow the user's Ctrl-C and shut the
+            # watcher down permanently instead of letting the interrupt through.
             _LOGGER.exception("Fatal error while processing dhcp packet: %s", ex)
             self.shutdown()
             return
