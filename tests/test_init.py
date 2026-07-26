@@ -980,3 +980,63 @@ async def test_make_listen_socket_falls_back_to_fcntl() -> None:
     finally:
         os.close(r)
         os.close(w)
+
+
+# (label, raw DHCP option bytes appended after a well-formed message-type=REQUEST)
+_MALFORMED_DHCP_OPTIONS: list[tuple[str, bytes]] = [
+    ("requested_addr shorter than an IPv4 address", b"\x32\x02\x0a\x00"),
+    ("requested_addr longer than an IPv4 address", b"\x32\x08" + b"\x0a" * 8),
+    ("requested_addr with a zero length", b"\x32\x00"),
+    ("requested_addr truncated mid-value", b"\x32\x04\x0a"),
+    ("hostname of undecodable bytes", b"\x0c\x04\xff\xff\xff\xff"),
+    ("hostname with a zero length", b"\x0c\x00"),
+    ("hostname label past the 63-byte idna limit", b"\x0c\xff" + b"a" * 255),
+    ("hostname of bare dots (empty idna labels)", b"\x0c\x03..."),
+    ("hostname containing NUL bytes", b"\x0c\x05a\x00b\x00c"),
+    ("an option code scapy does not know", b"\xe0\x03abc"),
+]
+
+
+@pytest.mark.parametrize(
+    "options", [pytest.param(o, id=label) for label, o in _MALFORMED_DHCP_OPTIONS]
+)
+def test_handler_survives_malformed_wire_options(options: bytes) -> None:
+    """
+    A DHCP REQUEST carrying malformed option bytes must not crash the handler.
+
+    ``docs/usage.md`` promises that untrusted DHCP traffic cannot crash the
+    packet handler, but every other handler test builds its options as Python
+    tuples (``DHCP(options=[("hostname", b"...")])``), which skips scapy's
+    option dissector entirely. A real packet arrives as bytes, so the values
+    reaching ``DHCPRequest`` are whatever that dissector made of attacker-chosen
+    lengths and codes — a different, unexercised code path.
+
+    Each case is a valid REQUEST plus one hostile option. The handler must emit
+    exactly one request with ``str`` fields: neither raising (the reader
+    callback has no exception handler around ``handle_dhcp_packet``) nor
+    handing the caller ``bytes`` where the API documents a ``str``.
+    """
+    from scapy.compat import raw
+    from scapy.layers.dhcp import BOOTP
+    from scapy.layers.inet import IP, UDP
+
+    requests: list[DHCPRequest] = []
+    handler = make_packet_handler(requests.append)
+
+    frame = (
+        Ether(src="00:11:22:33:44:55", dst="ff:ff:ff:ff:ff:ff")
+        / IP(src="1.2.3.4", dst="255.255.255.255")
+        / UDP(sport=68, dport=67)
+        / BOOTP(chaddr=b"\x00\x11\x22\x33\x44\x55")
+        # magic cookie, message-type=REQUEST, the hostile option, end
+        / (b"\x63\x82\x53\x63" + b"\x35\x01\x03" + options + b"\xff")
+    )
+
+    # Re-parse from the wire so scapy dissects the options as it would on a
+    # live socket, rather than reusing the objects we just built.
+    handler(Ether(raw(frame)))
+
+    assert len(requests) == 1
+    assert isinstance(requests[0].ip_address, str)
+    assert isinstance(requests[0].hostname, str)
+    assert requests[0].mac_address == "00:11:22:33:44:55"
