@@ -218,7 +218,6 @@ class MockIface:
 
 
 class MockSocket:
-
     def __init__(self, reader: int, exc: type[Exception] | None = None) -> None:
         self._fileno = reader
         if reader != -1:
@@ -373,7 +372,6 @@ async def test_watcher_temp_exception(caplog: pytest.LogCaptureFixture) -> None:
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-
         async_fire_time_changed(utcnow() + timedelta(seconds=AUTO_RECOVER_TIME))
         await asyncio.sleep(0.1)
 
@@ -504,7 +502,6 @@ async def test_watcher_stop_after_temp_exception(
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-
         async_fire_time_changed(utcnow() + timedelta(seconds=30))
         await asyncio.sleep(0)
         await _write_test_packets_to_pipe(w)
@@ -980,3 +977,238 @@ async def test_make_listen_socket_falls_back_to_fcntl() -> None:
     finally:
         os.close(r)
         os.close(w)
+
+
+@pytest.mark.asyncio
+async def test_failed_restart_rearms_recovery() -> None:
+    """A restart that cannot open a socket must schedule another attempt."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with patch("aiodhcpwatcher.AIODHCPWatcher._start", return_value=None):
+        watcher._execute_restart()
+        assert watcher._restart_task is not None
+        await watcher._restart_task
+
+    try:
+        assert watcher._restart_timer is not None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_restart_does_not_rearm_after_shutdown() -> None:
+    """A failed restart must not re-arm recovery once shut down."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with patch("aiodhcpwatcher.AIODHCPWatcher._start", return_value=None):
+        watcher._execute_restart()
+        assert watcher._restart_task is not None
+        watcher._shutdown = True
+        await watcher._restart_task
+
+    assert watcher._restart_timer is None
+
+
+@pytest.mark.asyncio
+async def test_restart_task_error_is_logged_and_recovery_rearmed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unexpected restart failure is logged, not swallowed, and retried."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with (
+        caplog.at_level(logging.ERROR),
+        patch("aiodhcpwatcher.AIODHCPWatcher._start", side_effect=ValueError("boom")),
+    ):
+        watcher._execute_restart()
+        assert watcher._restart_task is not None
+        with pytest.raises(ValueError):
+            await watcher._restart_task
+
+    try:
+        assert "boom" in caplog.text
+        assert watcher._restart_timer is not None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_restart_does_not_rearm_recovery() -> None:
+    """stop() cancelling an in-flight restart must not re-arm recovery."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with patch("aiodhcpwatcher.AIODHCPWatcher._start", return_value=None):
+        watcher._execute_restart()
+        task = watcher._restart_task
+        assert task is not None
+        watcher.stop()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert watcher._restart_timer is None
+
+
+@pytest.mark.asyncio
+async def test_successful_restart_does_not_rearm_recovery() -> None:
+    """A restart that installs readers again must not schedule a retry."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+        ):
+            watcher._execute_restart()
+            assert watcher._restart_task is not None
+            await watcher._restart_task
+
+        assert watcher._socks
+        assert watcher._restart_timer is None
+    finally:
+        watcher.stop()
+        os.close(r)
+        os.close(w)
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_arms_recovery() -> None:
+    """A first start that cannot open a socket must schedule a retry."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            side_effect=OSError("interface not up yet"),
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        await watcher.async_start()
+
+    try:
+        assert watcher._restart_timer is not None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_arms_recovery_when_it_skips_the_failed_interface() -> None:
+    """
+    The retry must survive a _start() that skips a failure instead of aborting.
+
+    _start() reports "socket not available yet" through _socket_unavailable, but
+    it is free to keep going and hand back a handler for the interfaces that did
+    open. Nothing is listening in that case either, so recovery must still be
+    armed -- keying the retry on _start() returning None would silently lose it.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+
+    # *args: this double stands in for _start(), whose signature is not the
+    # thing under test. Spelling the parameters out would make the test fail on
+    # any future change to them rather than on the behaviour it asserts.
+    def _skip_the_failure(*args: object) -> object:
+        watcher._socket_unavailable = True
+        return lambda packet: None
+
+    with patch.object(watcher, "_start", side_effect=_skip_the_failure):
+        await watcher.async_start()
+
+    try:
+        assert not watcher._socks
+        assert watcher._restart_timer is not None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_recovers_when_interface_comes_up() -> None:
+    """The armed retry must install readers once the interface is available."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                side_effect=OSError("interface not up yet"),
+            ),
+            patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+        ):
+            await watcher.async_start()
+
+        assert watcher._restart_timer is not None
+
+        with (
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+        ):
+            async_fire_time_changed(utcnow() + timedelta(seconds=AUTO_RECOVER_TIME))
+            assert watcher._restart_task is not None
+            await watcher._restart_task
+
+        assert watcher._socks
+    finally:
+        watcher.stop()
+        os.close(r)
+        os.close(w)
+
+
+@pytest.mark.asyncio
+async def test_broken_packet_filter_does_not_arm_recovery() -> None:
+    """A missing packet filter is permanent; retrying it would log forever."""
+    watcher = AIODHCPWatcher(lambda data: None)
+    with patch(
+        "aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap",
+        side_effect=Scapy_Exception("no libpcap"),
+    ):
+        await watcher.async_start()
+
+    try:
+        assert watcher._restart_timer is None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_no_readers_added_does_not_arm_recovery(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Readers that all fail to register are a platform limit, not a transient."""
+    caplog.set_level(logging.DEBUG)
+    watcher = AIODHCPWatcher(lambda data: None)
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            return_value=None,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        await watcher.async_start()
+
+    try:
+        assert "Not starting watcher because no readers added" in caplog.text
+        assert watcher._restart_timer is None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_initial_start_does_not_arm_after_shutdown() -> None:
+    """A start racing shutdown must not leave a retry timer behind."""
+    watcher = AIODHCPWatcher(lambda data: None)
+
+    def _fail(*args: object, **kwargs: object) -> None:
+        watcher._shutdown = True
+        raise OSError("interface not up yet")
+
+    with (
+        patch(
+            "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+            side_effect=_fail,
+        ),
+        patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
+    ):
+        await watcher.async_start()
+
+    assert watcher._restart_timer is None

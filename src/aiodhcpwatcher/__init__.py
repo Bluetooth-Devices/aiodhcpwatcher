@@ -107,9 +107,12 @@ class AIODHCPWatcher:
         self._shutdown: bool = False
         self._restart_timer: asyncio.TimerHandle | None = None
         self._restart_task: asyncio.Task[None] | None = None
+        self._socket_unavailable = False
 
     def restart_soon(self) -> None:
         """Restart the watcher soon."""
+        if self._shutdown:
+            return
         if not self._restart_timer:
             _LOGGER.debug("Restarting watcher in %s seconds", AUTO_RECOVER_TIME)
             self._restart_timer = self._loop.call_later(
@@ -117,8 +120,18 @@ class AIODHCPWatcher:
             )
 
     def _clear_restart_task(self, task: asyncio.Task[None]) -> None:
-        """Clear the restart task."""
+        """Clear the restart task, re-arming recovery if the restart failed."""
         self._restart_task = None
+        if task.cancelled() or self._shutdown:
+            return
+        if exc := task.exception():
+            _LOGGER.error("Unexpected error restarting watcher: %s", exc)
+        elif self._socks:
+            # Readers are installed again; recovery is complete.
+            return
+        # The interface may still be down. Keep retrying, otherwise a single
+        # failed attempt leaves the watcher permanently deaf.
+        self.restart_soon()
 
     def _execute_restart(self) -> None:
         """Execute the restart."""
@@ -153,6 +166,7 @@ class AIODHCPWatcher:
         _init_scapy()
         # disable scapy promiscuous mode as we do not need it
         conf.sniff_promisc = 0
+        self._socket_unavailable = False
 
         try:
             self._verify_working_pcap(FILTER)
@@ -170,6 +184,10 @@ class AIODHCPWatcher:
                         if_index = sock.iface.index
                     self._socks.append((if_index, sock, sock.fileno()))
             except (Scapy_Exception, OSError) as ex:
+                # The interface may simply not be up yet, unlike a missing
+                # filter or a loop that cannot watch the fd. Only this is worth
+                # retrying.
+                self._socket_unavailable = True
                 if os.geteuid() == 0:
                     _LOGGER.error("Cannot watch for dhcp packets: %s", ex)
                 else:
@@ -191,6 +209,10 @@ class AIODHCPWatcher:
                 None, self._start, if_indexes
             )
         ):
+            if self._socket_unavailable:
+                # A cold-boot race: retry, otherwise the very first failure is
+                # permanent even though the interface may come up seconds later.
+                self.restart_soon()
             return
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
@@ -234,7 +256,20 @@ class AIODHCPWatcher:
                 sock.close()
                 self._socks.remove((if_index, sock, fileno))
         if len(self._socks) == 0:
-            _LOGGER.debug("Not starting watcher because no readers added")
+            if self._socket_unavailable:
+                # Nothing is listening because no socket could be opened yet.
+                # Keyed on the flag and on the sockets actually installed, not
+                # on _start() returning None: _start() is free to skip a failed
+                # interface and still hand back a handler, and then this is the
+                # only place the failure is still visible. Only retried when
+                # nothing is listening -- restarting over live readers would
+                # orphan them.
+                self.restart_soon()
+                return
+            # Every reader was dropped by the loop. Unlike a socket that is not
+            # available yet, this does not resolve itself, so it is reported
+            # once rather than retried.
+            _LOGGER.warning("Not starting watcher because no readers added")
 
     def _on_data(
         self, handle_dhcp_packet: Callable[["Packet"], None], sock: Any
