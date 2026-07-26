@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Any
@@ -219,6 +220,9 @@ class MockIface:
         self.index: int = MockIface.index
 
 
+_adopted_sockets: list["MockSocket"] = []
+
+
 class MockSocket:
     def __init__(self, reader: int, exc: type[Exception] | None = None) -> None:
         self._fileno = reader
@@ -243,7 +247,28 @@ class MockSocket:
         return packet
 
     def fileno(self) -> int:
+        # _start calls fileno() exactly when it appends the socket, so this is
+        # the moment the watcher takes ownership and becomes responsible for
+        # closing it. Sockets built by a test but never handed over are not
+        # registered and are not the watcher's to close.
+        _adopted_sockets.append(self)
         return self._fileno
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_listen_sockets() -> Iterator[None]:
+    """
+    Fail the test if the watcher took a listen socket and never closed it.
+
+    Line coverage cannot see a missing close(), which is how the startup-abort
+    and mid-executor-cancellation fd leaks stayed invisible under a 100%
+    covered suite. This turns every existing test into a leak detector.
+    """
+    _adopted_sockets.clear()
+    yield
+    unclosed = [sock for sock in _adopted_sockets if not sock.close.called]
+    _adopted_sockets.clear()
+    assert not unclosed, f"{len(unclosed)} listen socket(s) leaked"
 
 
 @pytest_asyncio.fixture(autouse=True, scope="session")
