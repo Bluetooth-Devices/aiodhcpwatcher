@@ -901,6 +901,34 @@ async def test_on_data_ignores_blocking_io_error() -> None:
     handler.assert_not_called()
 
 
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+@pytest.mark.asyncio
+async def test_on_data_does_not_swallow_base_exceptions(
+    exc: type[BaseException], caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    _on_data must let KeyboardInterrupt and SystemExit through.
+
+    scapy's SuperSocket.recv() re-raises KeyboardInterrupt rather than turning it
+    into a Raw layer, so a Ctrl-C landing inside recv() reaches _on_data. Eating
+    it there would report a bogus "Fatal error while processing dhcp packet" and
+    shut the watcher down for good instead of interrupting the process.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    handler = MagicMock()
+
+    class _Sock:
+        def recv(self) -> None:
+            raise exc
+
+    with pytest.raises(exc):
+        watcher._on_data(handler, _Sock())
+
+    handler.assert_not_called()
+    assert watcher._shutdown is False
+    assert "Fatal error while processing dhcp packet" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_on_data_ignores_empty_read() -> None:
     """_on_data must not invoke the handler when recv() returns no data."""
