@@ -107,9 +107,12 @@ class AIODHCPWatcher:
         self._shutdown: bool = False
         self._restart_timer: asyncio.TimerHandle | None = None
         self._restart_task: asyncio.Task[None] | None = None
+        self._filter_broken = False
 
     def restart_soon(self) -> None:
         """Restart the watcher soon."""
+        if self._shutdown:
+            return
         if not self._restart_timer:
             _LOGGER.debug("Restarting watcher in %s seconds", AUTO_RECOVER_TIME)
             self._restart_timer = self._loop.call_later(
@@ -171,6 +174,8 @@ class AIODHCPWatcher:
                 "Cannot watch for dhcp packets without a functional packet filter: %s",
                 ex,
             )
+            # A missing or broken filter will not fix itself; do not retry it.
+            self._filter_broken = True
             return None
 
         for if_index in set(if_indexes) if if_indexes else [None]:
@@ -201,6 +206,10 @@ class AIODHCPWatcher:
                 None, self._start, if_indexes
             )
         ):
+            if not self._filter_broken:
+                # The interface may simply not be up yet -- a cold-boot race.
+                # Retry, otherwise the very first failure is permanent.
+                self.restart_soon()
             return
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
@@ -244,7 +253,10 @@ class AIODHCPWatcher:
                 sock.close()
                 self._socks.remove((if_index, sock, fileno))
         if len(self._socks) == 0:
-            _LOGGER.debug("Not starting watcher because no readers added")
+            # Every socket was dropped, or none could be created. Unlike a
+            # socket that is not available yet, this does not resolve itself,
+            # so it is reported once rather than retried.
+            _LOGGER.warning("Not starting watcher because no readers added")
 
     def _on_data(
         self, handle_dhcp_packet: Callable[["Packet"], None], sock: Any
