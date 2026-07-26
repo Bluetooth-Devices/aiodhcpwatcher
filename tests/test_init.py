@@ -1,9 +1,12 @@
 import asyncio
 import logging
 import os
+import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -217,8 +220,10 @@ class MockIface:
         self.index: int = MockIface.index
 
 
-class MockSocket:
+_adopted_sockets: list["MockSocket"] = []
 
+
+class MockSocket:
     def __init__(self, reader: int, exc: type[Exception] | None = None) -> None:
         self._fileno = reader
         if reader != -1:
@@ -242,7 +247,28 @@ class MockSocket:
         return packet
 
     def fileno(self) -> int:
+        # _start calls fileno() exactly when it appends the socket, so this is
+        # the moment the watcher takes ownership and becomes responsible for
+        # closing it. Sockets built by a test but never handed over are not
+        # registered and are not the watcher's to close.
+        _adopted_sockets.append(self)
         return self._fileno
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_listen_sockets() -> Iterator[None]:
+    """
+    Fail the test if the watcher took a listen socket and never closed it.
+
+    Line coverage cannot see a missing close(), which is how the startup-abort
+    and mid-executor-cancellation fd leaks stayed invisible under a 100%
+    covered suite. This turns every existing test into a leak detector.
+    """
+    _adopted_sockets.clear()
+    yield
+    unclosed = [sock for sock in _adopted_sockets if not sock.close.called]
+    _adopted_sockets.clear()
+    assert not unclosed, f"{len(unclosed)} listen socket(s) leaked"
 
 
 @pytest_asyncio.fixture(autouse=True, scope="session")
@@ -373,7 +399,6 @@ async def test_watcher_temp_exception(caplog: pytest.LogCaptureFixture) -> None:
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-
         async_fire_time_changed(utcnow() + timedelta(seconds=AUTO_RECOVER_TIME))
         await asyncio.sleep(0.1)
 
@@ -504,7 +529,6 @@ async def test_watcher_stop_after_temp_exception(
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-
         async_fire_time_changed(utcnow() + timedelta(seconds=30))
         await asyncio.sleep(0)
         await _write_test_packets_to_pipe(w)
@@ -570,15 +594,21 @@ async def test_permission_denied_to_add_reader(
 ) -> None:
     """Test permission denied to add reader."""
     loop = asyncio.get_running_loop()
-    with (
-        patch.object(loop, "add_reader", side_effect=PermissionError),
-        patch("scapy.arch.common.compile_filter"),
-        patch.object(
-            interfaces,
-            "resolve_iface",
-        ),
-    ):
-        (await async_start(lambda data: None))()
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch.object(loop, "add_reader", side_effect=PermissionError),
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("scapy.arch.common.compile_filter"),
+        ):
+            (await async_start(lambda data: None))()
+    finally:
+        os.close(r)
+        os.close(w)
 
     assert "Permission denied to watch for dhcp packets" in caplog.text
 
@@ -747,14 +777,40 @@ async def test_add_reader_not_supported(caplog: pytest.LogCaptureFixture) -> Non
     raises NotImplementedError. The watcher must degrade gracefully.
     """
     loop = asyncio.get_running_loop()
-    with (
-        patch.object(loop, "add_reader", side_effect=NotImplementedError),
-        patch("scapy.arch.common.compile_filter"),
-        patch.object(interfaces, "resolve_iface"),
-    ):
-        (await async_start(lambda data: None))()
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch.object(loop, "add_reader", side_effect=NotImplementedError),
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("scapy.arch.common.compile_filter"),
+        ):
+            (await async_start(lambda data: None))()
+    finally:
+        os.close(r)
+        os.close(w)
 
     assert "Cannot watch for dhcp packets" in caplog.text
+
+
+def test_make_listen_socket_sets_nonblocking() -> None:
+    """
+    A listen socket exposing set_nonblock must be put in non-blocking mode.
+
+    _on_data runs on the event loop thread, so a blocking listen socket would
+    stall the whole loop on a short read. The two add_reader tests above used
+    to reach this line only incidentally, through a bare socket mock; assert it
+    directly instead so it stays pinned.
+    """
+    sock = MagicMock(spec=["set_nonblock"])
+    with patch.object(interfaces, "resolve_iface") as resolve_iface:
+        resolve_iface.return_value.l2listen.return_value.return_value = sock
+        assert AIODHCPWatcher._make_listen_socket(MagicMock(), FILTER) is sock
+
+    sock.set_nonblock.assert_called_once_with(True)
 
 
 def test_handler_ignores_non_dhcp_request_message_type() -> None:
@@ -874,6 +930,7 @@ async def test_async_start_aborts_when_shutdown_during_init(
     watcher = AIODHCPWatcher(lambda data: None)
 
     def _start_then_shutdown(
+        socks: list[Any],
         if_indexes: object = None,
     ) -> "object":
         # Simulate shutdown racing in while _start ran in the executor.
@@ -884,6 +941,115 @@ async def test_async_start_aborts_when_shutdown_during_init(
         await watcher.async_start()
 
     assert "Not starting watcher because it is shutdown after init" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_shutdown_during_init_closes_opened_sockets() -> None:
+    """
+    Sockets opened by _start must be closed when shutdown races the init.
+
+    shutdown() runs stop() while _start is still in the executor, so the
+    sockets _start opens afterwards are never installed in _socks and
+    async_start() aborts without registering a reader. Nothing else would
+    close them -- and the watcher stays alive through the shutdown callable it
+    handed the caller, leaking a raw socket per interface for the lifetime of
+    the process.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    sock = MockSocket(r)
+    try:
+
+        def _start_then_shutdown(socks: list[Any], if_indexes: object = None) -> object:
+            watcher._shutdown = True
+            socks.append((1, sock, sock.fileno()))
+            return make_packet_handler(watcher._callback)
+
+        with patch.object(watcher, "_start", side_effect=_start_then_shutdown):
+            await watcher.async_start()
+    finally:
+        os.close(r)
+        os.close(w)
+
+    sock.close.assert_called_once_with()
+    assert watcher._socks == []
+
+
+@pytest.mark.asyncio
+async def test_failed_start_closes_opened_sockets() -> None:
+    """
+    Sockets opened before _start gives up must not be left open.
+
+    _start can open a socket for one interface and then bail out for the
+    next; async_start() must not return with those sockets dangling,
+    unregistered and unclosed.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    sock = MockSocket(r)
+    try:
+
+        def _start_then_fail(socks: list[Any], if_indexes: object = None) -> None:
+            socks.append((1, sock, sock.fileno()))
+            return None
+
+        with patch.object(watcher, "_start", side_effect=_start_then_fail):
+            await watcher.async_start()
+    finally:
+        os.close(r)
+        os.close(w)
+
+    sock.close.assert_called_once_with()
+    assert watcher._socks == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_async_start_closes_opened_sockets() -> None:
+    """
+    Sockets opened by _start must be closed when the awaiting task is cancelled.
+
+    stop() cancels _restart_task, which may be parked on the executor call.
+    Cancellation raises at the await, so no line after it runs -- but _start
+    still completes in its thread and opens a socket per interface. Without
+    cleanup tied to the executor future those fds live for the lifetime of the
+    process.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    sock = MockSocket(r)
+    in_executor = asyncio.Event()
+    release = threading.Event()
+    # The done callback runs on the loop thread, so signalling from close() is
+    # safe and lets the test await the cleanup instead of polling for it.
+    closed = asyncio.Event()
+    sock.close.side_effect = closed.set
+    try:
+
+        def _slow_start(socks: list[Any], if_indexes: object = None) -> object:
+            watcher._loop.call_soon_threadsafe(in_executor.set)
+            release.wait(30)
+            socks.append((1, sock, sock.fileno()))
+            return make_packet_handler(watcher._callback)
+
+        with patch.object(watcher, "_start", side_effect=_slow_start):
+            task = asyncio.get_running_loop().create_task(watcher.async_start())
+            await in_executor.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # _start is still parked: it has opened nothing yet, and the
+            # cancelled coroutine will never reach any cleanup of its own.
+            sock.close.assert_not_called()
+            release.set()
+            # Let the executor finish and its done callback run on the loop.
+            await asyncio.wait_for(closed.wait(), 30)
+    finally:
+        release.set()
+        os.close(r)
+        os.close(w)
+
+    sock.close.assert_called_once_with()
+    assert watcher._socks == []
 
 
 @pytest.mark.asyncio
