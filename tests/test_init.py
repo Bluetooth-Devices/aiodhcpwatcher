@@ -1,9 +1,11 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -871,6 +873,7 @@ async def test_async_start_aborts_when_shutdown_during_init(
     watcher = AIODHCPWatcher(lambda data: None)
 
     def _start_then_shutdown(
+        socks: list[Any],
         if_indexes: object = None,
     ) -> "object":
         # Simulate shutdown racing in while _start ran in the executor.
@@ -889,20 +892,20 @@ async def test_shutdown_during_init_closes_opened_sockets() -> None:
     Sockets opened by _start must be closed when shutdown races the init.
 
     shutdown() runs stop() while _start is still in the executor, so the
-    sockets _start opens afterwards land in _socks after stop() already
-    emptied it. async_start() then aborts without registering a reader, so
-    nothing else ever closes them -- and the watcher stays alive through the
-    shutdown callable it handed the caller, leaking a raw socket per
-    interface for the lifetime of the process.
+    sockets _start opens afterwards are never installed in _socks and
+    async_start() aborts without registering a reader. Nothing else would
+    close them -- and the watcher stays alive through the shutdown callable it
+    handed the caller, leaking a raw socket per interface for the lifetime of
+    the process.
     """
     watcher = AIODHCPWatcher(lambda data: None)
     r, w = os.pipe()
     sock = MockSocket(r)
     try:
 
-        def _start_then_shutdown(if_indexes: object = None) -> object:
+        def _start_then_shutdown(socks: list[Any], if_indexes: object = None) -> object:
             watcher._shutdown = True
-            watcher._socks.append((1, sock, sock.fileno()))  # type: ignore[arg-type]
+            socks.append((1, sock, sock.fileno()))
             return make_packet_handler(watcher._callback)
 
         with patch.object(watcher, "_start", side_effect=_start_then_shutdown):
@@ -921,21 +924,69 @@ async def test_failed_start_closes_opened_sockets() -> None:
     Sockets opened before _start gives up must not be left open.
 
     _start can open a socket for one interface and then bail out for the
-    next; async_start() must not return with those sockets dangling in
-    _socks, unregistered and unclosed.
+    next; async_start() must not return with those sockets dangling,
+    unregistered and unclosed.
     """
     watcher = AIODHCPWatcher(lambda data: None)
     r, w = os.pipe()
     sock = MockSocket(r)
     try:
 
-        def _start_then_fail(if_indexes: object = None) -> None:
-            watcher._socks.append((1, sock, sock.fileno()))  # type: ignore[arg-type]
+        def _start_then_fail(socks: list[Any], if_indexes: object = None) -> None:
+            socks.append((1, sock, sock.fileno()))
             return None
 
         with patch.object(watcher, "_start", side_effect=_start_then_fail):
             await watcher.async_start()
     finally:
+        os.close(r)
+        os.close(w)
+
+    sock.close.assert_called_once_with()
+    assert watcher._socks == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_async_start_closes_opened_sockets() -> None:
+    """
+    Sockets opened by _start must be closed when the awaiting task is cancelled.
+
+    stop() cancels _restart_task, which may be parked on the executor call.
+    Cancellation raises at the await, so no line after it runs -- but _start
+    still completes in its thread and opens a socket per interface. Without
+    cleanup tied to the executor future those fds live for the lifetime of the
+    process.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    sock = MockSocket(r)
+    in_executor = asyncio.Event()
+    release = threading.Event()
+    try:
+
+        def _slow_start(socks: list[Any], if_indexes: object = None) -> object:
+            watcher._loop.call_soon_threadsafe(in_executor.set)
+            release.wait(5)
+            socks.append((1, sock, sock.fileno()))
+            return make_packet_handler(watcher._callback)
+
+        with patch.object(watcher, "_start", side_effect=_slow_start):
+            task = asyncio.get_running_loop().create_task(watcher.async_start())
+            await in_executor.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # _start is still running: it has opened nothing yet, and the
+            # cancelled coroutine will never reach any cleanup of its own.
+            sock.close.assert_not_called()
+            release.set()
+            # Let the executor finish and its done callback run on the loop.
+            for _ in range(100):
+                await asyncio.sleep(0)
+                if sock.close.called:
+                    break
+    finally:
+        release.set()
         os.close(r)
         os.close(w)
 
