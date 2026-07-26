@@ -1101,7 +1101,10 @@ async def test_start_arms_recovery_when_it_skips_the_failed_interface() -> None:
     """
     watcher = AIODHCPWatcher(lambda data: None)
 
-    def _skip_the_failure(if_indexes: object = None) -> object:
+    # *args: this double stands in for _start(), whose signature is not the
+    # thing under test. Spelling the parameters out would make the test fail on
+    # any future change to them rather than on the behaviour it asserts.
+    def _skip_the_failure(*args: object) -> object:
         watcher._socket_unavailable = True
         return lambda packet: None
 
