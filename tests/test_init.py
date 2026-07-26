@@ -218,7 +218,6 @@ class MockIface:
 
 
 class MockSocket:
-
     def __init__(self, reader: int, exc: type[Exception] | None = None) -> None:
         self._fileno = reader
         if reader != -1:
@@ -373,7 +372,6 @@ async def test_watcher_temp_exception(caplog: pytest.LogCaptureFixture) -> None:
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-
         async_fire_time_changed(utcnow() + timedelta(seconds=AUTO_RECOVER_TIME))
         await asyncio.sleep(0.1)
 
@@ -504,7 +502,6 @@ async def test_watcher_stop_after_temp_exception(
         ),
         patch("aiodhcpwatcher.AIODHCPWatcher._verify_working_pcap"),
     ):
-
         async_fire_time_changed(utcnow() + timedelta(seconds=30))
         await asyncio.sleep(0)
         await _write_test_packets_to_pipe(w)
@@ -704,9 +701,9 @@ def test_all_exports_are_importable() -> None:
     import aiodhcpwatcher
 
     for name in aiodhcpwatcher.__all__:
-        assert hasattr(
-            aiodhcpwatcher, name
-        ), f"{name!r} is declared in __all__ but not defined in the module"
+        assert hasattr(aiodhcpwatcher, name), (
+            f"{name!r} is declared in __all__ but not defined in the module"
+        )
 
 
 def test_async_start_is_exported() -> None:

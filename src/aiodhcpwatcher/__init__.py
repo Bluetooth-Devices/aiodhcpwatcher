@@ -191,9 +191,15 @@ class AIODHCPWatcher:
                 None, self._start, if_indexes
             )
         ):
+            # _start may have opened sockets before giving up; nothing is
+            # registered with the loop yet, so close them here.
+            self.stop()
             return
         if self._shutdown:  # may change during the executor call
             _LOGGER.debug("Not starting watcher because it is shutdown after init")  # type: ignore[unreachable]
+            # shutdown() ran while _start was in the executor, so its stop()
+            # emptied _socks before _start refilled it. Close them again.
+            self.stop()
             return
         for if_index, sock, fileno in list(self._socks):
             if fileno == -1:
