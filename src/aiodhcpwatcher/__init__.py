@@ -256,9 +256,19 @@ class AIODHCPWatcher:
                 sock.close()
                 self._socks.remove((if_index, sock, fileno))
         if len(self._socks) == 0:
-            # Every socket was dropped, or none could be created. Unlike a
-            # socket that is not available yet, this does not resolve itself,
-            # so it is reported once rather than retried.
+            if self._socket_unavailable:
+                # Nothing is listening because no socket could be opened yet.
+                # Keyed on the flag and on the sockets actually installed, not
+                # on _start() returning None: _start() is free to skip a failed
+                # interface and still hand back a handler, and then this is the
+                # only place the failure is still visible. Only retried when
+                # nothing is listening -- restarting over live readers would
+                # orphan them.
+                self.restart_soon()
+                return
+            # Every reader was dropped by the loop. Unlike a socket that is not
+            # available yet, this does not resolve itself, so it is reported
+            # once rather than retried.
             _LOGGER.warning("Not starting watcher because no readers added")
 
     def _on_data(

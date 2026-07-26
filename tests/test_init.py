@@ -701,9 +701,9 @@ def test_all_exports_are_importable() -> None:
     import aiodhcpwatcher
 
     for name in aiodhcpwatcher.__all__:
-        assert hasattr(
-            aiodhcpwatcher, name
-        ), f"{name!r} is declared in __all__ but not defined in the module"
+        assert hasattr(aiodhcpwatcher, name), (
+            f"{name!r} is declared in __all__ but not defined in the module"
+        )
 
 
 def test_async_start_is_exported() -> None:
@@ -1084,6 +1084,32 @@ async def test_failed_initial_start_arms_recovery() -> None:
         await watcher.async_start()
 
     try:
+        assert watcher._restart_timer is not None
+    finally:
+        watcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_arms_recovery_when_it_skips_the_failed_interface() -> None:
+    """
+    The retry must survive a _start() that skips a failure instead of aborting.
+
+    _start() reports "socket not available yet" through _socket_unavailable, but
+    it is free to keep going and hand back a handler for the interfaces that did
+    open. Nothing is listening in that case either, so recovery must still be
+    armed -- keying the retry on _start() returning None would silently lose it.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+
+    def _skip_the_failure(if_indexes: object = None) -> object:
+        watcher._socket_unavailable = True
+        return lambda packet: None
+
+    with patch.object(watcher, "_start", side_effect=_skip_the_failure):
+        await watcher.async_start()
+
+    try:
+        assert not watcher._socks
         assert watcher._restart_timer is not None
     finally:
         watcher.stop()
