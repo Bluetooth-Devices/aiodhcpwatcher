@@ -117,8 +117,18 @@ class AIODHCPWatcher:
             )
 
     def _clear_restart_task(self, task: asyncio.Task[None]) -> None:
-        """Clear the restart task."""
+        """Clear the restart task, re-arming recovery if the restart failed."""
         self._restart_task = None
+        if task.cancelled() or self._shutdown:
+            return
+        if exc := task.exception():
+            _LOGGER.error("Unexpected error restarting watcher: %s", exc)
+        elif self._socks:
+            # Readers are installed again; recovery is complete.
+            return
+        # The interface may still be down. Keep retrying, otherwise a single
+        # failed attempt leaves the watcher permanently deaf.
+        self.restart_soon()
 
     def _execute_restart(self) -> None:
         """Execute the restart."""

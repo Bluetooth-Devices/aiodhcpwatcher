@@ -61,7 +61,7 @@ shutdown = await aiodhcpwatcher.async_start(on_dhcp_request)
 
 ## Auto-recovery
 
-If the underlying socket raises an `OSError` while reading (e.g. an interface goes down), the watcher stops, then schedules a restart 30 seconds later. Callers do not need to handle transient socket failures manually.
+If the underlying socket raises an `OSError` while reading (e.g. an interface goes down), the watcher stops, then schedules a restart 30 seconds later. If that restart cannot reopen a socket — the interface is still down, for instance — another attempt is scheduled 30 seconds after it, and so on until one succeeds or `shutdown` is called. Callers do not need to handle transient socket failures manually.
 
 ## Hostname decoding
 
