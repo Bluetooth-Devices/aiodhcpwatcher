@@ -594,15 +594,21 @@ async def test_permission_denied_to_add_reader(
 ) -> None:
     """Test permission denied to add reader."""
     loop = asyncio.get_running_loop()
-    with (
-        patch.object(loop, "add_reader", side_effect=PermissionError),
-        patch("scapy.arch.common.compile_filter"),
-        patch.object(
-            interfaces,
-            "resolve_iface",
-        ),
-    ):
-        (await async_start(lambda data: None))()
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch.object(loop, "add_reader", side_effect=PermissionError),
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("scapy.arch.common.compile_filter"),
+        ):
+            (await async_start(lambda data: None))()
+    finally:
+        os.close(r)
+        os.close(w)
 
     assert "Permission denied to watch for dhcp packets" in caplog.text
 
@@ -728,9 +734,9 @@ def test_all_exports_are_importable() -> None:
     import aiodhcpwatcher
 
     for name in aiodhcpwatcher.__all__:
-        assert hasattr(
-            aiodhcpwatcher, name
-        ), f"{name!r} is declared in __all__ but not defined in the module"
+        assert hasattr(aiodhcpwatcher, name), (
+            f"{name!r} is declared in __all__ but not defined in the module"
+        )
 
 
 def test_async_start_is_exported() -> None:
@@ -771,14 +777,40 @@ async def test_add_reader_not_supported(caplog: pytest.LogCaptureFixture) -> Non
     raises NotImplementedError. The watcher must degrade gracefully.
     """
     loop = asyncio.get_running_loop()
-    with (
-        patch.object(loop, "add_reader", side_effect=NotImplementedError),
-        patch("scapy.arch.common.compile_filter"),
-        patch.object(interfaces, "resolve_iface"),
-    ):
-        (await async_start(lambda data: None))()
+    r, w = os.pipe()
+    mock_socket = MockSocket(r)
+    try:
+        with (
+            patch.object(loop, "add_reader", side_effect=NotImplementedError),
+            patch(
+                "aiodhcpwatcher.AIODHCPWatcher._make_listen_socket",
+                return_value=mock_socket,
+            ),
+            patch("scapy.arch.common.compile_filter"),
+        ):
+            (await async_start(lambda data: None))()
+    finally:
+        os.close(r)
+        os.close(w)
 
     assert "Cannot watch for dhcp packets" in caplog.text
+
+
+def test_make_listen_socket_sets_nonblocking() -> None:
+    """
+    A listen socket exposing set_nonblock must be put in non-blocking mode.
+
+    _on_data runs on the event loop thread, so a blocking listen socket would
+    stall the whole loop on a short read. The two add_reader tests above used
+    to reach this line only incidentally, through a bare socket mock; assert it
+    directly instead so it stays pinned.
+    """
+    sock = MagicMock(spec=["set_nonblock"])
+    with patch.object(interfaces, "resolve_iface") as resolve_iface:
+        resolve_iface.return_value.l2listen.return_value.return_value = sock
+        assert AIODHCPWatcher._make_listen_socket(MagicMock(), FILTER) is sock
+
+    sock.set_nonblock.assert_called_once_with(True)
 
 
 def test_handler_ignores_non_dhcp_request_message_type() -> None:
