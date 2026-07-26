@@ -887,6 +887,66 @@ async def test_async_start_aborts_when_shutdown_during_init(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_during_init_closes_opened_sockets() -> None:
+    """
+    Sockets opened by _start must be closed when shutdown races the init.
+
+    shutdown() runs stop() while _start is still in the executor, so the
+    sockets _start opens afterwards land in _socks after stop() already
+    emptied it. async_start() then aborts without registering a reader, so
+    nothing else ever closes them -- and the watcher stays alive through the
+    shutdown callable it handed the caller, leaking a raw socket per
+    interface for the lifetime of the process.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    sock = MockSocket(r)
+    try:
+
+        def _start_then_shutdown(if_indexes: object = None) -> object:
+            watcher._shutdown = True
+            watcher._socks.append((1, sock, sock.fileno()))  # type: ignore[arg-type]
+            return make_packet_handler(watcher._callback)
+
+        with patch.object(watcher, "_start", side_effect=_start_then_shutdown):
+            await watcher.async_start()
+    finally:
+        os.close(r)
+        os.close(w)
+
+    sock.close.assert_called_once_with()
+    assert watcher._socks == []
+
+
+@pytest.mark.asyncio
+async def test_failed_start_closes_opened_sockets() -> None:
+    """
+    Sockets opened before _start gives up must not be left open.
+
+    _start can open a socket for one interface and then bail out for the
+    next; async_start() must not return with those sockets dangling in
+    _socks, unregistered and unclosed.
+    """
+    watcher = AIODHCPWatcher(lambda data: None)
+    r, w = os.pipe()
+    sock = MockSocket(r)
+    try:
+
+        def _start_then_fail(if_indexes: object = None) -> None:
+            watcher._socks.append((1, sock, sock.fileno()))  # type: ignore[arg-type]
+            return None
+
+        with patch.object(watcher, "_start", side_effect=_start_then_fail):
+            await watcher.async_start()
+    finally:
+        os.close(r)
+        os.close(w)
+
+    sock.close.assert_called_once_with()
+    assert watcher._socks == []
+
+
+@pytest.mark.asyncio
 async def test_on_data_ignores_blocking_io_error() -> None:
     """_on_data must swallow BlockingIOError from a non-blocking socket."""
     watcher = AIODHCPWatcher(lambda data: None)
