@@ -278,7 +278,13 @@ class AIODHCPWatcher:
         else:
             import fcntl  # pylint: disable=import-outside-toplevel
 
-            fcntl.fcntl(sock.fileno(), fcntl.F_SETFL, os.O_NONBLOCK)
+            # F_SETFL replaces every settable status flag at once, so the new
+            # flag has to be OR-ed into the current ones -- passing O_NONBLOCK
+            # alone would clear anything else already set on the descriptor.
+            fd = sock.fileno()
+            fcntl.fcntl(
+                fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK
+            )
 
         return sock
 
