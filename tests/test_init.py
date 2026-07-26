@@ -703,9 +703,9 @@ def test_all_exports_are_importable() -> None:
     import aiodhcpwatcher
 
     for name in aiodhcpwatcher.__all__:
-        assert hasattr(
-            aiodhcpwatcher, name
-        ), f"{name!r} is declared in __all__ but not defined in the module"
+        assert hasattr(aiodhcpwatcher, name), (
+            f"{name!r} is declared in __all__ but not defined in the module"
+        )
 
 
 def test_async_start_is_exported() -> None:
@@ -962,11 +962,15 @@ async def test_cancelling_async_start_closes_opened_sockets() -> None:
     sock = MockSocket(r)
     in_executor = asyncio.Event()
     release = threading.Event()
+    # The done callback runs on the loop thread, so signalling from close() is
+    # safe and lets the test await the cleanup instead of polling for it.
+    closed = asyncio.Event()
+    sock.close.side_effect = closed.set
     try:
 
         def _slow_start(socks: list[Any], if_indexes: object = None) -> object:
             watcher._loop.call_soon_threadsafe(in_executor.set)
-            release.wait(5)
+            release.wait(30)
             socks.append((1, sock, sock.fileno()))
             return make_packet_handler(watcher._callback)
 
@@ -976,15 +980,12 @@ async def test_cancelling_async_start_closes_opened_sockets() -> None:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            # _start is still running: it has opened nothing yet, and the
+            # _start is still parked: it has opened nothing yet, and the
             # cancelled coroutine will never reach any cleanup of its own.
             sock.close.assert_not_called()
             release.set()
             # Let the executor finish and its done callback run on the loop.
-            for _ in range(100):
-                await asyncio.sleep(0)
-                if sock.close.called:
-                    break
+            await asyncio.wait_for(closed.wait(), 30)
     finally:
         release.set()
         os.close(r)
