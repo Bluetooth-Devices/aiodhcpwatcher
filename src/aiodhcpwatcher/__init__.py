@@ -107,7 +107,7 @@ class AIODHCPWatcher:
         self._shutdown: bool = False
         self._restart_timer: asyncio.TimerHandle | None = None
         self._restart_task: asyncio.Task[None] | None = None
-        self._filter_broken = False
+        self._socket_unavailable = False
 
     def restart_soon(self) -> None:
         """Restart the watcher soon."""
@@ -166,6 +166,7 @@ class AIODHCPWatcher:
         _init_scapy()
         # disable scapy promiscuous mode as we do not need it
         conf.sniff_promisc = 0
+        self._socket_unavailable = False
 
         try:
             self._verify_working_pcap(FILTER)
@@ -174,8 +175,6 @@ class AIODHCPWatcher:
                 "Cannot watch for dhcp packets without a functional packet filter: %s",
                 ex,
             )
-            # A missing or broken filter will not fix itself; do not retry it.
-            self._filter_broken = True
             return None
 
         for if_index in set(if_indexes) if if_indexes else [None]:
@@ -185,6 +184,10 @@ class AIODHCPWatcher:
                         if_index = sock.iface.index
                     self._socks.append((if_index, sock, sock.fileno()))
             except (Scapy_Exception, OSError) as ex:
+                # The interface may simply not be up yet, unlike a missing
+                # filter or a loop that cannot watch the fd. Only this is worth
+                # retrying.
+                self._socket_unavailable = True
                 if os.geteuid() == 0:
                     _LOGGER.error("Cannot watch for dhcp packets: %s", ex)
                 else:
@@ -206,9 +209,9 @@ class AIODHCPWatcher:
                 None, self._start, if_indexes
             )
         ):
-            if not self._filter_broken:
-                # The interface may simply not be up yet -- a cold-boot race.
-                # Retry, otherwise the very first failure is permanent.
+            if self._socket_unavailable:
+                # A cold-boot race: retry, otherwise the very first failure is
+                # permanent even though the interface may come up seconds later.
                 self.restart_soon()
             return
         if self._shutdown:  # may change during the executor call
