@@ -14,8 +14,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: 3.x
       - uses: pre-commit/action@v3.0.1
@@ -26,7 +26,7 @@ jobs:
     name: Lint Commit Messages
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: wagoid/commitlint-github-action@v6.2.1
@@ -46,12 +46,12 @@ jobs:
           - macOS-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: snok/install-poetry@v1.4.1
+      - uses: snok/install-poetry@v1.4.2
       - name: Install Dependencies
         run: poetry install
         shell: bash
@@ -59,7 +59,7 @@ jobs:
         run: poetry run pytest --cov-report=xml --ignore=tests/benchmarks
         shell: bash
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
@@ -70,17 +70,17 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - uses: snok/install-poetry@v1.4.1
+      - uses: snok/install-poetry@v1.4.2
       - name: Install Dependencies
         run: poetry install --with dev
         shell: bash
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@v4
+        uses: CodSpeedHQ/action@v5
         with:
           # CodSpeed Action v4 dropped the implicit default and now requires
           # an explicit mode. "simulation" keeps the instrumented, machine-
@@ -100,7 +100,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
@@ -109,7 +109,7 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
         run: git switch -C "$BRANCH"
       - name: Test release
-        uses: python-semantic-release/python-semantic-release@v10.4.1
+        uses: python-semantic-release/python-semantic-release@v10.6.1
         with:
           no_operation_mode: true
 
@@ -130,7 +130,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
@@ -141,7 +141,7 @@ jobs:
         run: git switch -C "$BRANCH"
 
       - name: Release
-        uses: python-semantic-release/python-semantic-release@v10.4.1
+        uses: python-semantic-release/python-semantic-release@v10.6.1
         id: release
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
