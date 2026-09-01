@@ -35,6 +35,15 @@ Packet capture requires `CAP_NET_RAW` (or running as root). Without it, `aiodhcp
 sudo setcap cap_net_raw=eip $(readlink -f $(which python))
 ```
 
+On macOS and the BSDs there is no `CAP_NET_RAW`. Capture goes through the BPF devices (`/dev/bpf*`), which are owned by root and not readable by other users by default, so a non-root process fails the same way: a debug log line and no callbacks. The usual fix is to make the BPF devices group-readable and add the user to that group. Wireshark ships a small launch daemon, ChmodBPF, that does this at every boot; on macOS with Homebrew:
+
+```bash
+brew install --cask wireshark-chmodbpf
+sudo dseditgroup -o edit -a "$USER" -t user access_bpf
+```
+
+Log out and back in (or reboot) so the new group membership applies, then check that `ls -l /dev/bpf0` shows the `access_bpf` group. Running as root also works but is usually not what you want for a long-running service.
+
 ## Selecting interfaces
 
 By default, the watcher listens on scapy's default interface. To watch specific interfaces, pass their indexes:
